@@ -1,0 +1,53 @@
+# Dependencies
+node_modules
+.pnp
+.pnp.js
+
+# Build outputs
+dist
+dist-ssr
+build
+
+# Local environment & temporary files
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+*.local
+
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Editor & OS files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+*.Zone.Identifier
+
+# Large GeoTIFF & DEM files (exceeds GitHub 100MB limit)
+*.tif
+*.tiff
+*.dt*
+public/*.tif
+public/*.tiff
+*.kmz
+
+# Python artifacts if any
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv/
