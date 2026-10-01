@@ -8,9 +8,7 @@ import {
   useMap,
   GeoJSON,
   LayersControl,
-  Polygon,
   Circle,
-  CircleMarker,
   Rectangle,
   Tooltip
 } from 'react-leaflet';
@@ -27,42 +25,33 @@ L.Icon.Default.mergeOptions({
 
 const { BaseLayer } = LayersControl;
 
-// Custom colored radar/threat marker icon
-function createThreatIcon(color = '#ff3333') {
+// Default center coordinates: Shoalwater Bay Training Area (SWBTA, Australia)
+const SWBTA_CENTER = [-22.7397, 150.13];
+const SWBTA_DEFAULT_ZOOM = 10;
+
+// Custom colored tactical radar/threat marker icon (clean, non-pulsing)
+function createThreatIcon(color = '#ff3333', name = '') {
   return L.divIcon({
-    className: 'custom-threat-icon',
+    className: 'custom-threat-icon-wrapper',
     html: `
-      <div style="
-        position: relative;
-        width: 28px;
-        height: 28px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-      ">
-        <div style="
-          position: absolute;
-          width: 24px;
-          height: 24px;
-          border-radius: 50%;
-          background: ${color};
-          opacity: 0.25;
-          animation: pulse-ring 2s infinite;
-        "></div>
-        <div style="
-          width: 14px;
-          height: 14px;
-          border-radius: 50%;
-          background: ${color};
-          border: 2px solid #ffffff;
-          box-shadow: 0 0 6px rgba(0,0,0,0.6);
-        "></div>
+      <div class="tactical-marker-pin" style="--marker-color: ${color}">
+        <div class="marker-core"></div>
+        <div class="marker-label">${escapeHtml(name)}</div>
       </div>
     `,
-    iconSize: [28, 28],
-    iconAnchor: [14, 14],
+    iconSize: [24, 24],
+    iconAnchor: [12, 12],
     popupAnchor: [0, -14]
   });
+}
+
+function escapeHtml(text) {
+  if (!text) return '';
+  return String(text)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
 }
 
 // Controller component to zoom and center when DEM bounds change
@@ -77,7 +66,7 @@ function MapController({ demBbox, triggerFitBounds }) {
           [minY, minX],
           [maxY, maxX]
         ],
-        { padding: [30, 30], maxZoom: 13, animate: true }
+        { padding: [36, 36], maxZoom: 13, animate: true }
       );
     }
   }, [demBbox, triggerFitBounds, map]);
@@ -89,11 +78,8 @@ const MapComponent = ({
   onMapClick,
   viewshedData = [],
   threats = [],
-  waypoints = [],
-  mode = 'threat',
   onDeleteThreat,
-  onDeleteWaypoint,
-  eraserPoints = [],
+  onUpdateThreatName,
   demBbox = null,
   triggerFitBounds = 0,
   visibleTiers = { '50ft': true, '200ft': true, '500ft': true, 'custom': true },
@@ -123,26 +109,23 @@ const MapComponent = ({
     : null;
 
   return (
-    <div
-      className={`map-container-inner ${mode === 'eraser' ? 'eraser-cursor' : ''}`}
-      style={{ height: '100%', width: '100%', position: 'relative' }}
-    >
+    <div className="map-container-inner" style={{ height: '100%', width: '100%', position: 'relative' }}>
       <MapContainer
-        center={demBounds ? [(demBounds[0][0] + demBounds[1][0]) / 2, (demBounds[0][1] + demBounds[1][1]) / 2] : [1.35, 103.8]}
-        zoom={10}
+        center={demBounds ? [(demBounds[0][0] + demBounds[1][0]) / 2, (demBounds[0][1] + demBounds[1][1]) / 2] : SWBTA_CENTER}
+        zoom={SWBTA_DEFAULT_ZOOM}
         style={{ height: '100%', width: '100%' }}
       >
         <MapController demBbox={demBbox} triggerFitBounds={triggerFitBounds} />
 
         <LayersControl position="topright">
-          <BaseLayer checked name="Satellite (Esri)">
+          <BaseLayer checked name="Satellite Imagery (Esri)">
             <TileLayer
               url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
-              attribution="Tiles &copy; Esri &mdash; Source: Esri, i-cubed, USDA, USGS, AEX, GeoEye, Getmapping, Aerogrid, IGN, IGP, UPR-EGP, and the GIS User Community"
+              attribution="Tiles &copy; Esri &mdash; Esri, USGS, Maxar"
             />
           </BaseLayer>
 
-          <BaseLayer name="Dark Grey (Carto)">
+          <BaseLayer name="Dark Tactical (CartoDB)">
             <TileLayer
               url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
               attribution="&copy; CartoDB"
@@ -164,19 +147,19 @@ const MapComponent = ({
           <Rectangle
             bounds={demBounds}
             pathOptions={{
-              color: '#00e5ff',
-              weight: 2,
-              dashArray: '6, 6',
-              fillColor: '#00e5ff',
-              fillOpacity: 0.04
+              color: '#38bdf8',
+              weight: 1.5,
+              dashArray: '5, 5',
+              fillColor: '#38bdf8',
+              fillOpacity: 0.03
             }}
           >
-            <Tooltip permanent={false} direction="top">
-              <strong>DEM Operational Coverage (Copernicus GLO-30)</strong>
+            <Tooltip permanent={false} direction="top" className="tactical-tooltip">
+              <strong>Copernicus GLO-30 DEM Extent</strong>
               <br />
-              Lat: {demBounds[0][0].toFixed(3)}&deg; to {demBounds[1][0].toFixed(3)}&deg;
+              Lat: {demBounds[0][0].toFixed(3)}&deg; &rarr; {demBounds[1][0].toFixed(3)}&deg;
               <br />
-              Lon: {demBounds[0][1].toFixed(3)}&deg; to {demBounds[1][1].toFixed(3)}&deg;
+              Lon: {demBounds[0][1].toFixed(3)}&deg; &rarr; {demBounds[1][1].toFixed(3)}&deg;
             </Tooltip>
           </Rectangle>
         )}
@@ -189,8 +172,9 @@ const MapComponent = ({
             radius={t.range || 5000}
             pathOptions={{
               color: t.color || '#ff3333',
-              weight: 1,
-              dashArray: '4, 4',
+              weight: 1.2,
+              dashArray: '3, 4',
+              fillColor: t.color || '#ff3333',
               fillOpacity: 0.02
             }}
             interactive={false}
@@ -198,38 +182,50 @@ const MapComponent = ({
         ))}
 
         {/* Threat Markers */}
-        {threats.map((threat, idx) => (
+        {threats.map((threat) => (
           <Marker
             key={threat.id}
             position={[threat.lat, threat.lon]}
             icon={createThreatIcon(threat.color || '#ff3333', threat.name)}
           >
-            <Popup>
-              <div style={{ minWidth: '170px' }}>
-                <strong style={{ color: threat.color || '#ff3333', fontSize: '14px' }}>
-                  {threat.name || `Threat ${idx + 1}`}
-                </strong>
-                <hr style={{ margin: '4px 0', borderColor: '#444' }} />
-                <div><strong>Lat:</strong> {threat.lat.toFixed(5)}&deg;</div>
-                <div><strong>Lon:</strong> {threat.lon.toFixed(5)}&deg;</div>
-                <div><strong>Obs Height:</strong> {threat.obsHeight} m ({Math.round(threat.obsHeight / 0.3048)} ft)</div>
-                <div><strong>Range:</strong> {threat.range} m</div>
-                {threat.groundElev !== undefined && threat.groundElev !== null && (
-                  <div><strong>Terrain Elev:</strong> {threat.groundElev.toFixed(1)} m</div>
-                )}
+            <Popup className="tactical-leaflet-popup">
+              <div className="popup-card">
+                <div className="popup-header-row">
+                  <div className="popup-color-pill" style={{ backgroundColor: threat.color || '#ff3333' }}></div>
+                  <input
+                    type="text"
+                    className="popup-name-input"
+                    value={threat.name}
+                    onChange={(e) => onUpdateThreatName && onUpdateThreatName(threat.id, e.target.value)}
+                    placeholder="Threat Name..."
+                    title="Rename threat"
+                  />
+                </div>
+
+                <div className="popup-stats-grid">
+                  <div className="popup-stat-cell">
+                    <span className="stat-label">COORDINATES</span>
+                    <span className="stat-value">{threat.lat.toFixed(4)}&deg;, {threat.lon.toFixed(4)}&deg;</span>
+                  </div>
+                  <div className="popup-stat-cell">
+                    <span className="stat-label">OBSERVER HEIGHT</span>
+                    <span className="stat-value">{threat.obsHeight} m ({Math.round(threat.obsHeight / 0.3048)} ft)</span>
+                  </div>
+                  <div className="popup-stat-cell">
+                    <span className="stat-label">RADAR RANGE</span>
+                    <span className="stat-value">{(threat.range / 1000).toFixed(1)} km ({threat.range} m)</span>
+                  </div>
+                  {threat.groundElev !== undefined && threat.groundElev !== null && (
+                    <div className="popup-stat-cell highlight-cell">
+                      <span className="stat-label">TERRAIN ELEVATION</span>
+                      <span className="stat-value text-cyan">{threat.groundElev.toFixed(1)} m AMSL</span>
+                    </div>
+                  )}
+                </div>
+
                 {onDeleteThreat && (
                   <button
-                    style={{
-                      marginTop: '8px',
-                      background: '#ff4444',
-                      color: 'white',
-                      border: 'none',
-                      padding: '5px 8px',
-                      borderRadius: '4px',
-                      cursor: 'pointer',
-                      width: '100%',
-                      fontWeight: 'bold'
-                    }}
+                    className="popup-delete-btn"
                     onClick={(e) => {
                       e.stopPropagation();
                       onDeleteThreat(threat.id);
@@ -243,63 +239,8 @@ const MapComponent = ({
           </Marker>
         ))}
 
-        {/* Flight Waypoints Markers */}
-        {waypoints.map((wp, idx) => (
-          <Marker key={wp.id} position={[wp.lat, wp.lon]}>
-            <Popup>
-              <div>
-                <strong>Waypoint {idx + 1}</strong>
-                <br />
-                Alt: {wp.dispAlt} {wp.unit}
-                <br />
-                R: {wp.radius}m
-                <br />
-                {onDeleteWaypoint && (
-                  <button
-                    style={{
-                      marginTop: '5px',
-                      background: '#ff4444',
-                      color: 'white',
-                      border: 'none',
-                      padding: '5px',
-                      borderRadius: '4px',
-                      cursor: 'pointer'
-                    }}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onDeleteWaypoint(wp.id);
-                    }}
-                  >
-                    Delete Waypoint
-                  </button>
-                )}
-              </div>
-            </Popup>
-          </Marker>
-        ))}
-
-        {/* Eraser Polygon Preview */}
-        {mode === 'eraser' && eraserPoints.length > 0 && (
-          <>
-            <Polygon
-              positions={eraserPoints.map((p) => [p.lat, p.lng])}
-              pathOptions={{ color: '#ff4444', weight: 2, dashArray: '5, 5', fillOpacity: 0.25 }}
-            />
-            {eraserPoints.map((p, i) => (
-              <CircleMarker
-                key={`ep-${i}`}
-                center={[p.lat, p.lng]}
-                radius={4}
-                pathOptions={{ color: '#ff4444', fillColor: 'white', fillOpacity: 1 }}
-                interactive={false}
-              />
-            ))}
-          </>
-        )}
-
-        {/* Viewshed Layers (altitude tiers or individual features) */}
+        {/* Viewshed Layers (altitude tiers) */}
         {viewshedData.map((layer) => {
-          // If layer has tierId and it is toggled off, skip rendering
           if (layer.tierId && visibleTiers[layer.tierId] === false) {
             return null;
           }
@@ -312,15 +253,14 @@ const MapComponent = ({
             <GeoJSON
               key={layer.key || `${layer.id}-${layer.tierId || 'tier'}-${layer.geojson.features.length}`}
               data={layer.geojson}
-              interactive={mode !== 'eraser'}
+              interactive={true}
               style={(feature) => {
                 if (feature.properties && feature.properties.DN === 255) {
                   const featureColor = feature.properties.color || layer.color || '#FFFF00';
-                  // Stack tiers with subtle opacity
                   let fillOpacity = 0.45;
-                  if (feature.properties.tierId === '50ft') fillOpacity = 0.6;
-                  else if (feature.properties.tierId === '200ft') fillOpacity = 0.45;
-                  else if (feature.properties.tierId === '500ft') fillOpacity = 0.35;
+                  if (feature.properties.tierId === '50ft') fillOpacity = 0.58;
+                  else if (feature.properties.tierId === '200ft') fillOpacity = 0.44;
+                  else if (feature.properties.tierId === '500ft') fillOpacity = 0.34;
 
                   return {
                     color: featureColor,

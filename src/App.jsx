@@ -1,8 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
-import * as turf from '@turf/turf';
 import MapComponent from './components/MapComponent';
 import { parseGeoTiff } from './utils/geotiffLoader';
-import { exportMissionKmz, exportEditedGeoJsonKmz } from './utils/kmzExporter';
+import { exportMissionKmz } from './utils/kmzExporter';
 import './App.css';
 
 // Default altitude tiers for tactical Line of Sight
@@ -22,10 +21,6 @@ function App() {
   // --- Web Worker Reference ---
   const workerRef = useRef(null);
 
-  // --- Operational Mode ---
-  // 'threat' (place threats), 'flight' (place flight waypoints), 'eraser' (cutout shapes)
-  const [mode, setMode] = useState('threat');
-
   // --- Threats State ---
   const [threats, setThreats] = useState([]);
   const [defaultObsHeight, setDefaultObsHeight] = useState(10); // meters (e.g. 33 ft)
@@ -41,12 +36,9 @@ function App() {
     'custom': true
   });
 
-  // --- Custom Target Altitude (Weapon / Custom Mode) ---
+  // --- Custom Target Altitude ---
   const [enableCustomAlt, setEnableCustomAlt] = useState(false);
   const [customAltFt, setCustomAltFt] = useState(100);
-
-  // --- Flight Waypoints (Preserved Feature) ---
-  const [waypoints, setWaypoints] = useState([]);
 
   // --- Viewshed & Analysis State ---
   const [viewshedLayers, setViewshedLayers] = useState([]);
@@ -54,13 +46,22 @@ function App() {
   const [analyzing, setAnalyzing] = useState(false);
   const [analysisProgress, setAnalysisProgress] = useState(null);
 
-  // --- Eraser Tool State ---
-  const [blockSize, setBlockSize] = useState(50); // meters
-  const [eraserPoints, setEraserPoints] = useState([]);
-
-  // --- Drag & Drop state ---
+  // --- Drag & Drop & UI State ---
   const [isDraggingOver, setIsDraggingOver] = useState(false);
+  const [showDisclaimer, setShowDisclaimer] = useState(false);
   const fileInputRef = useRef(null);
+  const disclaimerRef = useRef(null);
+
+  // Close disclaimer when clicking outside
+  useEffect(() => {
+    function handleClickOutside(event) {
+      if (disclaimerRef.current && !disclaimerRef.current.contains(event.target)) {
+        setShowDisclaimer(false);
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
 
   // Initialize Web Worker
   useEffect(() => {
@@ -74,7 +75,6 @@ function App() {
       if (type === 'DEM_LOADED') {
         setDemLoading(false);
         setDemProgress(null);
-        // Trigger map to fit to new DEM extent
         setTriggerFitBounds(prev => prev + 1);
       } else if (type === 'LOS_PROGRESS') {
         setAnalysisProgress(data);
@@ -156,7 +156,7 @@ function App() {
         noData: parsed.noData
       });
 
-      // Transfer ArrayBuffer to Web Worker as a transferable object (zero-copy memory transfer)
+      // Transfer ArrayBuffer to Web Worker as transferable object
       setDemProgress({ stage: 'transferring', percent: 90, text: 'Transferring raster to Web Worker...' });
       workerRef.current.postMessage(
         {
@@ -225,61 +225,46 @@ function App() {
       console.error('Error fetching SWBTA.tif:', err);
       setDemLoading(false);
       setDemProgress(null);
-      alert(`Could not load local SWBTA.tif. Please drag & drop the file directly.`);
+      alert('Could not load local SWBTA.tif. Please drag & drop the file directly.');
     }
   };
 
-  // Map Click Handler
+  // Map Click Handler: Deploy Threat
   const handleMapClick = (latlng) => {
     if (analyzing) return;
 
-    if (mode === 'eraser') {
-      setEraserPoints(prev => [...prev, latlng]);
-      return;
-    }
-
-    if (mode === 'threat') {
-      // Check DEM bounds
-      if (demMetadata && demMetadata.bbox) {
-        const [minX, minY, maxX, maxY] = demMetadata.bbox;
-        if (latlng.lng < minX || latlng.lng > maxX || latlng.lat < minY || latlng.lat > maxY) {
-          alert('Warning: Placed threat is outside DEM operational coverage area.');
-        }
+    // Check DEM bounds
+    if (demMetadata && demMetadata.bbox) {
+      const [minX, minY, maxX, maxY] = demMetadata.bbox;
+      if (latlng.lng < minX || latlng.lng > maxX || latlng.lat < minY || latlng.lat > maxY) {
+        alert('Notice: Placed threat is outside the current DEM coverage area.');
       }
-
-      const threatId = Date.now();
-      const newThreat = {
-        id: threatId,
-        name: `Threat ${threats.length + 1}`,
-        lat: latlng.lat,
-        lon: latlng.lng,
-        obsHeight: defaultObsHeight,
-        range: defaultRange,
-        color: defaultThreatColor,
-        enabled: true,
-        groundElev: null
-      };
-
-      setThreats(prev => [...prev, newThreat]);
-    } else if (mode === 'flight') {
-      // Friendly waypoint
-      const wpId = Date.now();
-      const newWp = {
-        id: wpId,
-        lat: latlng.lat,
-        lon: latlng.lng,
-        dispAlt: 100,
-        unit: 'm',
-        radius: defaultRange,
-        color: '#00FF00'
-      };
-      setWaypoints(prev => [...prev, newWp]);
     }
+
+    const threatId = Date.now();
+    const newThreat = {
+      id: threatId,
+      name: `Threat ${threats.length + 1}`,
+      lat: latlng.lat,
+      lon: latlng.lng,
+      obsHeight: defaultObsHeight,
+      range: defaultRange,
+      color: defaultThreatColor,
+      enabled: true,
+      groundElev: null
+    };
+
+    setThreats(prev => [...prev, newThreat]);
+  };
+
+  // Update threat name
+  const handleUpdateThreatName = (id, newName) => {
+    setThreats(prev => prev.map(t => t.id === id ? { ...t, name: newName } : t));
+    setViewshedLayers(prev => prev.map(l => l.id === id ? { ...l, threatName: newName } : l));
   };
 
   // Load tactical sample threats in SWBTA area
   const handleLoadSampleThreats = () => {
-    // Preset coordinates corresponding to Shoalwater Bay Training Area (SWBTA)
     const presets = [
       {
         id: Date.now() + 1,
@@ -303,7 +288,7 @@ function App() {
       },
       {
         id: Date.now() + 3,
-        name: 'Observer Post Charlie',
+        name: 'Observation Post Charlie',
         lat: -22.58,
         lon: 150.05,
         obsHeight: 15,
@@ -315,7 +300,7 @@ function App() {
     setThreats(presets);
   };
 
-  // Batch Execution: Run LOS Analysis across all enabled threats & active altitude tiers
+  // Run LOS Analysis
   const handleRunLosAnalysis = () => {
     if (!demMetadata) {
       alert('Please load a Copernicus GLO-30 DEM file first.');
@@ -328,7 +313,6 @@ function App() {
       return;
     }
 
-    // Assemble altitude tiers
     const activeTiers = altitudeTiers.filter(t => t.enabled);
     if (enableCustomAlt) {
       activeTiers.push({
@@ -336,7 +320,7 @@ function App() {
         name: `${customAltFt} ft AGL (Custom)`,
         altitudeFt: customAltFt,
         altitudeM: customAltFt * 0.3048,
-        color: '#00FFFF',
+        color: '#00e5ff',
         enabled: true
       });
     }
@@ -364,11 +348,6 @@ function App() {
     setViewshedLayers(prev => prev.filter(l => l.id !== id));
   };
 
-  // Delete Waypoint
-  const handleDeleteWaypoint = (id) => {
-    setWaypoints(prev => prev.filter(w => w.id !== id));
-  };
-
   // Toggle Threat Enabled
   const handleToggleThreat = (id) => {
     setThreats(prev => prev.map(t => t.id === id ? { ...t, enabled: !t.enabled } : t));
@@ -384,67 +363,10 @@ function App() {
     setVisibleTiers(prev => ({ ...prev, [tierId]: !prev[tierId] }));
   };
 
-  // Eraser Tool Cutout
-  const handleConfirmErasure = () => {
-    if (eraserPoints.length < 3) {
-      alert('Please draw at least 3 points on the map to define the cutout polygon.');
-      return;
-    }
-
-    const coords = eraserPoints.map(p => [p.lng, p.lat]);
-    coords.push(coords[0]); // Close ring
-
-    const userPoly = turf.polygon([coords]);
-    const bbox = turf.bbox(userPoly);
-    const grid = turf.squareGrid(bbox, blockSize / 1000, { units: 'kilometers' });
-
-    const intersectingSquares = grid.features.filter(square => turf.booleanIntersects(square, userPoly));
-
-    if (intersectingSquares.length === 0) {
-      setEraserPoints([]);
-      return;
-    }
-
-    const eraserShape = turf.union(turf.featureCollection(intersectingSquares));
-
-    setViewshedLayers(prevLayers => {
-      return prevLayers.map(layer => {
-        try {
-          const clippedFeatures = layer.geojson.features.map(f => {
-            if (f.properties?.DN !== 255) return f;
-
-            try {
-              const diff = turf.difference(turf.featureCollection([f, eraserShape]));
-              if (!diff) return null;
-              diff.properties = { ...f.properties };
-              return diff;
-            } catch (e) {
-              console.warn('Clipping feature error:', e);
-              return f;
-            }
-          }).filter(Boolean);
-
-          return {
-            ...layer,
-            geojson: {
-              ...layer.geojson,
-              features: clippedFeatures
-            }
-          };
-        } catch (e) {
-          console.error('Viewshed layer erasure error:', e);
-          return layer;
-        }
-      });
-    });
-
-    setEraserPoints([]);
-  };
-
-  // Export Mission KMZ (All Tiers)
+  // Export Mission KMZ
   const handleExportMissionKmz = async () => {
     if (!lastRawResults || lastRawResults.length === 0) {
-      alert('No LOS analysis results available to export. Run analysis first.');
+      alert('No LOS analysis results available to export. Run viewshed analysis first.');
       return;
     }
 
@@ -452,7 +374,7 @@ function App() {
       await exportMissionKmz({
         threats,
         losResults: lastRawResults,
-        filename: 'mission_viewshed_copernicus.kmz'
+        filename: 'snapcheck_mission_viewshed.kmz'
       });
     } catch (e) {
       console.error('KMZ Export failed:', e);
@@ -460,62 +382,96 @@ function App() {
     }
   };
 
-  // Export Edited KMZ
-  const handleExportEditedKmz = async () => {
-    if (viewshedLayers.length === 0) {
-      alert('No viewshed data to export.');
-      return;
-    }
-
-    try {
-      // Combine all features
-      const allFeatures = [];
-      viewshedLayers.forEach(l => {
-        if (l.geojson && l.geojson.features) {
-          allFeatures.push(...l.geojson.features);
-        }
-      });
-
-      const combinedGeoJson = {
-        type: 'FeatureCollection',
-        features: allFeatures
-      };
-
-      await exportEditedGeoJsonKmz({
-        geojson: combinedGeoJson,
-        color: '#FF9900',
-        name: 'Edited_LOS_Viewshed',
-        filename: 'viewshed_edited.kmz'
-      });
-    } catch (e) {
-      console.error('Edited KMZ export failed:', e);
-      alert(`Edited KMZ export failed: ${e.message}`);
-    }
-  };
-
   // Clear All
   const handleClearAll = () => {
     setThreats([]);
-    setWaypoints([]);
     setViewshedLayers([]);
     setLastRawResults(null);
-    setEraserPoints([]);
   };
 
   return (
     <div className="app-container">
       {/* Sidebar Controls */}
-      <div className="sidebar">
+      <aside className="sidebar">
+        {/* Sleek Tactical Header */}
         <div className="sidebar-header">
-          <div className="logo-badge">GLO-30</div>
-          <h2>LOS Mission Planner</h2>
+          <div className="header-brand">
+            <div className="brand-icon">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="12" cy="12" r="10" />
+                <path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20" />
+                <path d="M2 12h20" />
+              </svg>
+            </div>
+            <div className="brand-text">
+              <h1 className="brand-title">SNAPCHECK</h1>
+              <span className="brand-subtitle">Tactical Viewshed Engine</span>
+            </div>
+          </div>
+
+          <div className="header-actions">
+            {demMetadata && (
+              <span className="live-status-pill">
+                <span className="live-dot"></span> 30m DEM
+              </span>
+            )}
+
+            {/* Disclaimer trigger icon (supports hover & click) */}
+            <div
+              className="disclaimer-anchor"
+              ref={disclaimerRef}
+              onMouseEnter={() => setShowDisclaimer(true)}
+              onMouseLeave={() => setShowDisclaimer(false)}
+            >
+              <button
+                type="button"
+                className={`btn-info-icon ${showDisclaimer ? 'active' : ''}`}
+                onClick={() => setShowDisclaimer(prev => !prev)}
+                title="Data & Methodology Info"
+                aria-label="Data Sources, Height Math, and Methodology Info"
+              >
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="12" cy="12" r="10"></circle>
+                  <line x1="12" y1="16" x2="12" y2="12"></line>
+                  <line x1="12" y1="8" x2="12.01" y2="8"></line>
+                </svg>
+              </button>
+
+              {/* Disclaimer Popover Card */}
+              {showDisclaimer && (
+                <div className="disclaimer-popover">
+                  <div className="disclaimer-header">
+                    <span className="disclaimer-title">Data & Elevation Info</span>
+                    <button className="btn-close-popover" onClick={() => setShowDisclaimer(false)}>&times;</button>
+                  </div>
+                  <div className="disclaimer-body">
+                    <div className="disclaimer-point">
+                      <strong>Threat Height (AGL):</strong> Threat height is measured <em>Above Ground Level</em> at that exact point. The engine samples the 30m DEM elevation under the threat and adds the mast height (e.g. 150m terrain + 10m mast = 160m total altitude). Target tiers (50ft, 200ft, 500ft) are also measured above local ground.
+                    </div>
+                    <div className="disclaimer-point">
+                      <strong>Open Source 30m DEM:</strong> Powered by open-source Copernicus GLO-30 (~30m ground resolution) elevation data.
+                    </div>
+                    <div className="disclaimer-point">
+                      <strong>Tree Canopy (2024):</strong> Includes global 2024 tree canopy coverage to account for forest screening and ridge obstruction.
+                    </div>
+                    <div className="disclaimer-point">
+                      <strong>Earth Curvature:</strong> Applies standard 4/3 effective Earth curvature and atmospheric refraction.
+                    </div>
+                    <div className="disclaimer-note">
+                      Notice: Intended for tactical mission visualization. Sub-30m features or recent construction should be field-verified.
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
         </div>
 
         {/* DEM Ingestion Section */}
-        <div className="sidebar-section dem-section">
-          <div className="section-title">
-            <span>Terrain Elevation (DEM)</span>
-            {demMetadata && <span className="status-badge ready">READY</span>}
+        <div className="sidebar-section">
+          <div className="section-header">
+            <span className="section-label">Terrain Elevation (DEM)</span>
+            {demMetadata && <span className="badge-ready">ACTIVE</span>}
           </div>
 
           {!demMetadata ? (
@@ -533,32 +489,72 @@ function App() {
                 style={{ display: 'none' }}
                 onChange={handleFileChange}
               />
-              <div className="dropzone-icon">&#8681;</div>
-              <div className="dropzone-text">Drop Copernicus GLO-30 (.tif)</div>
-              <button className="btn-browse" type="button">Browse Local File</button>
+              <div className="dropzone-svg">
+                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                  <polyline points="17 8 12 3 7 8" />
+                  <line x1="12" y1="3" x2="12" y2="15" />
+                </svg>
+              </div>
+              <div className="dropzone-text-primary">Drop Copernicus GLO-30 GeoTIFF</div>
+              <div className="dropzone-text-sub">Supports 30m .tif / .tiff with 2024 tree canopy</div>
+              <button className="btn-browse-file" type="button">Select File</button>
             </div>
           ) : (
-            <div className="dem-info-card">
-              <div className="dem-filename">{demMetadata.fileName}</div>
-              <div className="dem-grid">
-                <div><strong>Grid:</strong> {demMetadata.width} &times; {demMetadata.height}</div>
-                <div><strong>Resolution:</strong> ~30m (GLO-30)</div>
-                <div><strong>Format:</strong> GeoTIFF / EPSG:4326</div>
+            <div className="dem-telemetry-card">
+              <div className="dem-file-row">
+                <div className="dem-file-icon">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <polygon points="12 2 2 7 12 12 22 7 12 2" />
+                    <polyline points="2 17 12 22 22 17" />
+                    <polyline points="2 12 12 17 22 12" />
+                  </svg>
+                </div>
+                <div className="dem-filename" title={demMetadata.fileName}>{demMetadata.fileName}</div>
               </div>
-              <div className="dem-actions">
+
+              <div className="dem-stats-matrix">
+                <div className="stat-pill">
+                  <span className="stat-pill-label">GRID</span>
+                  <span className="stat-pill-val">{demMetadata.width} &times; {demMetadata.height}</span>
+                </div>
+                <div className="stat-pill">
+                  <span className="stat-pill-label">RESOLUTION</span>
+                  <span className="stat-pill-val">30m GLO-30</span>
+                </div>
+                <div className="stat-pill">
+                  <span className="stat-pill-label">CANOPY</span>
+                  <span className="stat-pill-val">2024 Trees</span>
+                </div>
+                <div className="stat-pill">
+                  <span className="stat-pill-label">DATUM</span>
+                  <span className="stat-pill-val">WGS84</span>
+                </div>
+              </div>
+
+              <div className="dem-actions-row">
                 <button
-                  className="btn-dem-action"
+                  className="btn-dem-sub"
                   onClick={() => setTriggerFitBounds(prev => prev + 1)}
-                  title="Fit Map to DEM Coverage"
+                  title="Fit Map to Coverage Bounds"
                 >
-                  Fit DEM Bounds
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <circle cx="12" cy="12" r="10" />
+                    <circle cx="12" cy="12" r="3" />
+                  </svg>
+                  Fit Bounds
                 </button>
                 <button
-                  className="btn-dem-action secondary"
+                  className="btn-dem-sub secondary"
                   onClick={() => fileInputRef.current?.click()}
-                  title="Change DEM File"
+                  title="Load New DEM File"
                 >
-                  Change File
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                    <polyline points="17 8 12 3 7 8" />
+                    <line x1="12" y1="3" x2="12" y2="15" />
+                  </svg>
+                  Replace DEM
                 </button>
                 <input
                   ref={fileInputRef}
@@ -571,14 +567,21 @@ function App() {
             </div>
           )}
 
-          {/* Quick-load button for SWBTA.tif */}
-          <button
-            className="btn-sample-load"
-            onClick={handleLoadSampleSwbta}
-            disabled={demLoading}
-          >
-            &#9881; Load Local SWBTA.tif
-          </button>
+          {/* Quick-load Sample DEM Button */}
+          {!demMetadata && (
+            <button
+              className="btn-load-sample"
+              onClick={handleLoadSampleSwbta}
+              disabled={demLoading}
+            >
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <polygon points="1 6 1 22 8 18 16 22 23 18 23 2 16 6 8 2 1 6"></polygon>
+                <line x1="8" y1="2" x2="8" y2="18"></line>
+                <line x1="16" y1="6" x2="16" y2="22"></line>
+              </svg>
+              Load Sample Area (SWBTA Australia)
+            </button>
+          )}
 
           {demLoading && demProgress && (
             <div className="loading-card">
@@ -593,47 +596,31 @@ function App() {
           )}
         </div>
 
-        {/* Operational Mode Selection */}
+        {/* Threat Configuration Section */}
         <div className="sidebar-section">
-          <div className="section-title">Operational Mode</div>
-          <div className="mode-toggle-group">
+          <div className="section-header">
+            <span className="section-label">Threat Deployment</span>
             <button
-              className={`mode-btn ${mode === 'threat' ? 'active' : ''}`}
-              onClick={() => setMode('threat')}
+              className="btn-preset-link"
+              onClick={handleLoadSampleThreats}
+              title="Load SWBTA sample tactical radar sites"
             >
-              &#9673; Threat Placement
-            </button>
-            <button
-              className={`mode-btn ${mode === 'flight' ? 'active' : ''}`}
-              onClick={() => setMode('flight')}
-            >
-              &#9992; Flight Plan
-            </button>
-            <button
-              className={`mode-btn ${mode === 'eraser' ? 'active' : ''}`}
-              onClick={() => setMode('eraser')}
-            >
-              &#9986; Eraser Tool
+              + SWBTA Presets
             </button>
           </div>
-        </div>
 
-        {/* Threat Placement Controls */}
-        {mode === 'threat' && (
-          <div className="sidebar-section">
-            <div className="section-title">
-              <span>Threat Configuration</span>
-              <button
-                className="btn-tiny"
-                onClick={handleLoadSampleThreats}
-                title="Load SWBTA sample threat radar sites"
-              >
-                + SWBTA Presets
-              </button>
-            </div>
+          <div className="deployment-hint">
+            <span className="hint-crosshair">+</span>
+            <span>Click map anywhere inside DEM to place a threat</span>
+          </div>
 
-            <div className="control-row">
-              <label>Default Observer Height: {defaultObsHeight} m ({Math.round(defaultObsHeight / 0.3048)} ft)</label>
+          {/* Default Parameters */}
+          <div className="control-group">
+            <div className="slider-control">
+              <div className="slider-header">
+                <span className="slider-label">Default Observer Height</span>
+                <span className="slider-val">{defaultObsHeight} m <span className="val-secondary">({Math.round(defaultObsHeight / 0.3048)} ft)</span></span>
+              </div>
               <input
                 type="range"
                 min="2"
@@ -641,11 +628,15 @@ function App() {
                 step="1"
                 value={defaultObsHeight}
                 onChange={(e) => setDefaultObsHeight(Number(e.target.value))}
+                className="sleek-slider"
               />
             </div>
 
-            <div className="control-row">
-              <label>Default Radar / Sensor Range: {defaultRange} m ({(defaultRange / 1000).toFixed(1)} km)</label>
+            <div className="slider-control">
+              <div className="slider-header">
+                <span className="slider-label">Default Radar / Sensor Range</span>
+                <span className="slider-val">{(defaultRange / 1000).toFixed(1)} km <span className="val-secondary">({defaultRange} m)</span></span>
+              </div>
               <input
                 type="range"
                 min="1000"
@@ -653,216 +644,261 @@ function App() {
                 step="500"
                 value={defaultRange}
                 onChange={(e) => setDefaultRange(Number(e.target.value))}
+                className="sleek-slider"
               />
             </div>
 
-            <div className="control-row">
-              <label>Threat Color:</label>
-              <div className="color-picker-row">
-                {['#FF3333', '#FF9900', '#FFFF00', '#FF00FF', '#00FFFF'].map(c => (
+            <div className="color-control">
+              <span className="control-label">Default Color</span>
+              <div className="color-swatch-list">
+                {['#FF3333', '#FF9900', '#FFFF00', '#00e5ff', '#a855f7'].map(c => (
                   <button
                     key={c}
-                    className={`color-dot ${defaultThreatColor === c ? 'selected' : ''}`}
+                    className={`color-swatch ${defaultThreatColor === c ? 'selected' : ''}`}
                     style={{ backgroundColor: c }}
                     onClick={() => setDefaultThreatColor(c)}
+                    aria-label={`Select color ${c}`}
                   />
                 ))}
               </div>
             </div>
+          </div>
 
-            <div className="threats-list-container">
-              <div className="threats-header">
-                <strong>Threat List ({threats.length})</strong>
-                <small>Click map to place</small>
+          {/* Threats List */}
+          <div className="threats-container">
+            <div className="threats-list-header">
+              <span className="list-title">Active Threats</span>
+              <span className="threat-counter">{threats.length}</span>
+            </div>
+
+            {threats.length === 0 ? (
+              <div className="empty-threats-card">
+                No threats configured. Click map inside the DEM extent to position a radar or observer site.
               </div>
-
-              {threats.length === 0 ? (
-                <div className="empty-hint">No threats placed. Click on map inside DEM to place a threat.</div>
-              ) : (
-                <div className="threats-scroll">
-                  {threats.map((threat) => (
-                    <div key={threat.id} className={`threat-card ${threat.enabled ? '' : 'disabled'}`}>
-                      <div className="threat-card-top">
+            ) : (
+              <div className="threats-scrollable">
+                {threats.map((threat) => (
+                  <div key={threat.id} className={`threat-item ${threat.enabled ? '' : 'disabled'}`}>
+                    <div className="threat-row-main">
+                      <label className="threat-checkbox-label" title="Toggle Threat Active">
                         <input
                           type="checkbox"
                           checked={threat.enabled}
                           onChange={() => handleToggleThreat(threat.id)}
-                          title="Toggle Threat Active"
                         />
-                        <span className="threat-card-name" style={{ color: threat.color }}>
-                          {threat.name}
-                        </span>
-                        <button
-                          className="btn-threat-delete"
-                          onClick={() => handleDeleteThreat(threat.id)}
-                          title="Delete Threat"
-                        >
-                          &times;
-                        </button>
-                      </div>
-                      <div className="threat-card-details">
-                        <span>{threat.lat.toFixed(4)}&deg;, {threat.lon.toFixed(4)}&deg;</span>
-                        <span>Obs: {threat.obsHeight}m | R: {threat.range}m</span>
-                        {threat.groundElev !== null && threat.groundElev !== undefined && (
-                          <span className="elev-tag">Elev: {threat.groundElev.toFixed(0)}m</span>
-                        )}
-                      </div>
+                        <span className="threat-color-indicator" style={{ backgroundColor: threat.color }}></span>
+                      </label>
+
+                      {/* Editable Threat Name */}
+                      <input
+                        type="text"
+                        className="threat-name-editable"
+                        value={threat.name}
+                        onChange={(e) => handleUpdateThreatName(threat.id, e.target.value)}
+                        placeholder="Threat Name..."
+                        title="Click to rename threat"
+                      />
+
+                      <button
+                        className="btn-delete-threat"
+                        onClick={() => handleDeleteThreat(threat.id)}
+                        title="Delete Threat"
+                        aria-label="Delete Threat"
+                      >
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                          <line x1="18" y1="6" x2="6" y2="18"></line>
+                          <line x1="6" y1="6" x2="18" y2="18"></line>
+                        </svg>
+                      </button>
                     </div>
-                  ))}
-                </div>
-              )}
-            </div>
+
+                    <div className="threat-row-meta">
+                      <span className="meta-tag">{threat.lat.toFixed(4)}&deg;, {threat.lon.toFixed(4)}&deg;</span>
+                      <span className="meta-tag">Obs: {threat.obsHeight}m</span>
+                      <span className="meta-tag">R: {(threat.range / 1000).toFixed(1)}km</span>
+                      {threat.groundElev !== null && threat.groundElev !== undefined && (
+                        <span className="meta-tag elev-badge">Elev: {threat.groundElev.toFixed(0)}m</span>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
-        )}
+        </div>
 
         {/* Altitude Tiers Section */}
         <div className="sidebar-section">
-          <div className="section-title">Altitude Tiers (AGL)</div>
-          <div className="tiers-list">
+          <div className="section-header">
+            <span className="section-label">Target Altitude Tiers (AGL)</span>
+          </div>
+
+          <div className="tiers-container">
             {altitudeTiers.map(tier => (
-              <div key={tier.id} className="tier-row">
-                <label className="tier-label">
+              <div key={tier.id} className="tier-card">
+                <label className="tier-check-wrapper">
                   <input
                     type="checkbox"
                     checked={tier.enabled}
                     onChange={() => handleToggleTier(tier.id)}
                   />
-                  <span className="tier-swatch" style={{ backgroundColor: tier.color }}></span>
-                  <span className="tier-name">{tier.name}</span>
+                  <span className="tier-color-bar" style={{ backgroundColor: tier.color }}></span>
+                  <div className="tier-info">
+                    <span className="tier-title">{tier.name}</span>
+                    <span className="tier-metric">({tier.altitudeM.toFixed(1)} m Clearance)</span>
+                  </div>
                 </label>
+
+                {/* Sleek SVG Eye Visibility Button */}
                 <button
-                  className={`btn-tier-view ${visibleTiers[tier.id] ? 'active' : ''}`}
+                  type="button"
+                  className={`btn-visibility-toggle ${visibleTiers[tier.id] ? 'visible' : 'hidden'}`}
                   onClick={() => handleToggleTierVisibility(tier.id)}
-                  title="Toggle Layer Visibility on Map"
+                  title={visibleTiers[tier.id] ? 'Hide layer from map' : 'Show layer on map'}
                 >
-                  {visibleTiers[tier.id] ? '👁' : '🚫'}
+                  {visibleTiers[tier.id] ? (
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+                      <circle cx="12" cy="12" r="3"></circle>
+                    </svg>
+                  ) : (
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path>
+                      <line x1="1" y1="1" x2="23" y2="23"></line>
+                    </svg>
+                  )}
                 </button>
               </div>
             ))}
 
-            <div className="custom-tier-toggle">
-              <label className="tier-label">
-                <input
-                  type="checkbox"
-                  checked={enableCustomAlt}
-                  onChange={(e) => setEnableCustomAlt(e.target.checked)}
-                />
-                <span className="tier-swatch" style={{ backgroundColor: '#00FFFF' }}></span>
-                <span>Custom Altitude ({customAltFt} ft AGL)</span>
-              </label>
+            {/* Custom Altitude Tier */}
+            <div className="tier-card custom-tier-card">
+              <div className="tier-custom-header">
+                <label className="tier-check-wrapper">
+                  <input
+                    type="checkbox"
+                    checked={enableCustomAlt}
+                    onChange={(e) => setEnableCustomAlt(e.target.checked)}
+                  />
+                  <span className="tier-color-bar" style={{ backgroundColor: '#00e5ff' }}></span>
+                  <div className="tier-info">
+                    <span className="tier-title">Custom Altitude</span>
+                    <span className="tier-metric">({customAltFt} ft / {(customAltFt * 0.3048).toFixed(1)} m AGL)</span>
+                  </div>
+                </label>
+              </div>
+
               {enableCustomAlt && (
-                <input
-                  type="range"
-                  min="20"
-                  max="5000"
-                  step="50"
-                  value={customAltFt}
-                  onChange={(e) => setCustomAltFt(Number(e.target.value))}
-                  style={{ width: '100%', marginTop: '5px' }}
-                />
+                <div className="custom-slider-wrap">
+                  <input
+                    type="range"
+                    min="20"
+                    max="5000"
+                    step="50"
+                    value={customAltFt}
+                    onChange={(e) => setCustomAltFt(Number(e.target.value))}
+                    className="sleek-slider"
+                  />
+                  <div className="slider-ticks">
+                    <span>20 ft</span>
+                    <span>2500 ft</span>
+                    <span>5000 ft</span>
+                  </div>
+                </div>
               )}
             </div>
           </div>
         </div>
 
-        {/* Eraser Tool Controls */}
-        {mode === 'eraser' && (
-          <div className="sidebar-section eraser-box">
-            <div className="section-title" style={{ color: '#ff6666' }}>Eraser Cutout Tool</div>
-            <div className="control-row">
-              <label>Block Grid Size: {blockSize} m</label>
-              <input
-                type="range"
-                min="10"
-                max="300"
-                step="10"
-                value={blockSize}
-                onChange={(e) => setBlockSize(Number(e.target.value))}
-              />
-              <small style={{ color: '#aaa' }}>
-                Click map to draw polygon ring. Click Confirm to subtract terrain block cutout.
-              </small>
-            </div>
-            <div className="eraser-buttons">
-              <button className="btn-confirm-eraser" onClick={handleConfirmErasure}>
-                Confirm Cutout ({eraserPoints.length} pts)
-              </button>
-              <button className="btn-clear-eraser" onClick={() => setEraserPoints([])}>
-                Clear Points
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* Run LOS Analysis & KMZ Export Buttons */}
-        <div className="sidebar-section execution-section">
+        {/* Execution & Export Section */}
+        <div className="sidebar-section execution-panel">
           <button
-            className={`btn-run-los ${analyzing ? 'pulse' : ''}`}
+            className={`btn-calculate-viewshed ${analyzing ? 'is-analyzing' : ''}`}
             onClick={handleRunLosAnalysis}
             disabled={analyzing || !demMetadata || threats.length === 0}
           >
-            {analyzing ? '⚡ Calculating LOS...' : '▶ Run LOS Analysis'}
+            {analyzing ? (
+              <>
+                <span className="spinner-ring"></span>
+                <span>Calculating Raycasts...</span>
+              </>
+            ) : (
+              <>
+                <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
+                  <polygon points="5 3 19 12 5 21 5 3"></polygon>
+                </svg>
+                <span>Calculate Viewshed</span>
+              </>
+            )}
           </button>
 
           {analyzing && analysisProgress && (
-            <div className="los-progress-box">
-              <div>Processing Threat {analysisProgress.current} / {analysisProgress.total}</div>
-              <small>{analysisProgress.threatName}</small>
+            <div className="calc-progress-hud">
+              <div className="progress-status-line">
+                <span>Threat {analysisProgress.current} of {analysisProgress.total}</span>
+                <span className="percent-num">{analysisProgress.percent}%</span>
+              </div>
+              <div className="progress-threat-title">{analysisProgress.threatName}</div>
               <div className="progress-bar-container">
                 <div
-                  className="progress-bar-fill"
+                  className="progress-bar-fill animated"
                   style={{ width: `${analysisProgress.percent}%` }}
                 ></div>
               </div>
             </div>
           )}
 
-          <div className="kmz-export-group">
+          <div className="export-actions">
             <button
-              className="btn-export-kmz"
+              className="btn-export-primary"
               onClick={handleExportMissionKmz}
               disabled={viewshedLayers.length === 0}
+              title="Export Full 3D Viewshed Mission KMZ for Google Earth"
             >
-              &#128190; Export Mission KMZ
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                <polyline points="7 10 12 15 17 10" />
+                <line x1="12" y1="15" x2="12" y2="3" />
+              </svg>
+              Export Mission KMZ
             </button>
+
             <button
-              className="btn-export-kmz secondary"
-              onClick={handleExportEditedKmz}
-              disabled={viewshedLayers.length === 0}
+              className="btn-clear-session"
+              onClick={handleClearAll}
+              title="Clear all threats and viewshed results"
             >
-              Export Edited KMZ
+              Clear All
             </button>
           </div>
-
-          <button className="btn-clear-all" onClick={handleClearAll}>
-            Clear All
-          </button>
         </div>
 
-        {/* Status / Footer */}
-        <div className="sidebar-footer">
-          <div>Engine: Web Worker + GeoTIFF Bilinear Sampler</div>
-          <div>CRS: WGS-84 / EPSG:4326</div>
-        </div>
-      </div>
+        {/* Sidebar Footer */}
+        <footer className="sidebar-footer">
+          <div className="footer-brand-row">
+            <span className="footer-brand-title">SNAPCHECK TACTICAL</span>
+            <span className="engine-tag">v2.4 &bull; GLO-30</span>
+          </div>
+          <div className="footer-meta-row">
+            <span>EPSG:4326 &bull; Web Worker LOS &bull; 2024 Canopy</span>
+          </div>
+        </footer>
+      </aside>
 
-      {/* Main Leaflet Map Wrapper */}
-      <div className="map-wrapper">
+      {/* Main Tactical Map */}
+      <main className="map-wrapper">
         <MapComponent
           onMapClick={handleMapClick}
           viewshedData={viewshedLayers}
           threats={threats}
-          waypoints={waypoints}
-          mode={mode}
           onDeleteThreat={handleDeleteThreat}
-          onDeleteWaypoint={handleDeleteWaypoint}
-          eraserPoints={eraserPoints}
+          onUpdateThreatName={handleUpdateThreatName}
           demBbox={demMetadata?.bbox}
           triggerFitBounds={triggerFitBounds}
           visibleTiers={visibleTiers}
           showRangeRings={true}
         />
-      </div>
+      </main>
     </div>
   );
 }
