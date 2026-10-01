@@ -374,7 +374,7 @@ function App() {
       await exportMissionKmz({
         threats,
         losResults: lastRawResults,
-        filename: 'snapcheck_mission_viewshed.kmz'
+        filename: 'mission_viewshed.kmz'
       });
     } catch (e) {
       console.error('KMZ Export failed:', e);
@@ -404,8 +404,8 @@ function App() {
               </svg>
             </div>
             <div className="brand-text">
-              <h1 className="brand-title">SNAPCHECK</h1>
-              <span className="brand-subtitle">Tactical Viewshed Engine</span>
+              <h1 className="brand-title">VIEWSHED PLANNER</h1>
+              <span className="brand-subtitle">Tactical Line of Sight Engine</span>
             </div>
           </div>
 
@@ -876,7 +876,7 @@ function App() {
         {/* Sidebar Footer */}
         <footer className="sidebar-footer">
           <div className="footer-brand-row">
-            <span className="footer-brand-title">SNAPCHECK TACTICAL</span>
+            <span className="footer-brand-title">TACTICAL LOS ENGINE</span>
             <span className="engine-tag">v2.4 &bull; GLO-30</span>
           </div>
           <div className="footer-meta-row">
