@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   parseCoordinateInput,
   fromDDM,
@@ -8,12 +8,6 @@ import {
   toDMS,
   toMGRS
 } from '../utils/coordinates';
-
-const PRESET_LOCATIONS = [
-  { name: 'SWBTA Radar Alpha (Falcon E)', coord: '-22.65, 150.15', mgrs: '56K KV 07094 92417', height: 12, range: 6000, color: '#ef4444' },
-  { name: 'SWBTA SAM Site Bravo (Eagle)', coord: '-22.75, 150.25', mgrs: '56K KV 17469 81389', height: 10, range: 5000, color: '#f97316' },
-  { name: 'SWBTA Post Charlie', coord: '-22.58, 150.05', mgrs: '56K KV 96734 99981', height: 15, range: 4500, color: '#eab308' }
-];
 
 const COLOR_PALETTE = ['#ef4444', '#f97316', '#eab308', '#38bdf8', '#a855f7', '#22c55e'];
 
@@ -28,6 +22,7 @@ export default function AddThreatModal({
   threatsCount = 0
 }) {
   const [activeTab, setActiveTab] = useState('auto');
+  const colorInputRef = useRef(null);
 
   // Input states
   const [autoInput, setAutoInput] = useState('-22.65, 150.15');
@@ -91,6 +86,10 @@ export default function AddThreatModal({
       return parseCoordinateInput(autoInput);
     }
 
+    if (activeTab === 'mgrs') {
+      return parseCoordinateInput(mgrsInput);
+    }
+
     if (activeTab === 'dd') {
       const latVal = parseFloat(ddLat);
       const lonVal = parseFloat(ddLon);
@@ -129,14 +128,11 @@ export default function AddThreatModal({
       return fromDMS(dmsLatDeg, dmsLatMin, dmsLatSec, dmsLatHem, dmsLonDeg, dmsLonMin, dmsLonSec, dmsLonHem);
     }
 
-    if (activeTab === 'mgrs') {
-      return parseCoordinateInput(mgrsInput);
-    }
-
     return { valid: false, error: 'Select a valid coordinate mode.' };
   }, [
     activeTab,
     autoInput,
+    mgrsInput,
     ddLat,
     ddLatHem,
     ddLon,
@@ -154,8 +150,7 @@ export default function AddThreatModal({
     dmsLonDeg,
     dmsLonMin,
     dmsLonSec,
-    dmsLonHem,
-    mgrsInput
+    dmsLonHem
   ]);
 
   const handleTabChange = (newTab) => {
@@ -204,7 +199,7 @@ export default function AddThreatModal({
     if (!demMetadata || !demMetadata.bbox) {
       return {
         status: 'no_dem',
-        message: 'No DEM file loaded yet. Threat will be positioned on the base map.'
+        message: 'No DEM coverage loaded yet. Threat will be placed on base terrain.'
       };
     }
 
@@ -219,58 +214,18 @@ export default function AddThreatModal({
     if (isInside) {
       return {
         status: 'inside',
-        message: `Within loaded Copernicus GLO-30 DEM bounds (${minY.toFixed(2)}° to ${maxY.toFixed(2)}° Lat).`
+        message: `Within loaded Copernicus GLO-30 DEM coverage bounds.`
       };
     } else {
       return {
         status: 'outside',
-        message: `Notice: Coordinate is outside current DEM coverage bounds [${minY.toFixed(2)}°, ${minX.toFixed(2)}° to ${maxY.toFixed(2)}°, ${maxX.toFixed(2)}°].`
+        message: `Warning: Outside loaded DEM bounds [${minY.toFixed(2)}°, ${minX.toFixed(2)}° to ${maxY.toFixed(2)}°, ${maxX.toFixed(2)}°].`
       };
     }
   }, [parsedCoord, demMetadata]);
 
-  const handleLoadPreset = (preset) => {
-    setAutoInput(preset.coord);
-    setMgrsInput(preset.mgrs);
-    setThreatName(preset.name);
-    setObsHeight(preset.height);
-    setRange(preset.range);
-    setColor(preset.color);
-
-    const parsed = parseCoordinateInput(preset.coord);
-    if (parsed.valid) {
-      const lat = parsed.lat;
-      const lon = parsed.lon;
-      setDdLat(Math.abs(lat).toFixed(6));
-      setDdLatHem(lat >= 0 ? 'N' : 'S');
-      setDdLon(Math.abs(lon).toFixed(6));
-      setDdLonHem(lon >= 0 ? 'E' : 'W');
-
-      const ddm = toDDM(lat, lon);
-      if (ddm.latParts && ddm.lonParts) {
-        setDdmLatDeg(String(ddm.latParts.deg));
-        setDdmLatMin(String(ddm.latParts.min));
-        setDdmLatHem(ddm.latParts.hem);
-        setDdmLonDeg(String(ddm.lonParts.deg));
-        setDdmLonMin(String(ddm.lonParts.min));
-        setDdmLonHem(ddm.lonParts.hem);
-      }
-
-      const dms = toDMS(lat, lon);
-      if (dms.latParts && dms.lonParts) {
-        setDmsLatDeg(String(dms.latParts.deg));
-        setDmsLatMin(String(dms.latParts.min));
-        setDmsLatSec(String(dms.latParts.sec));
-        setDmsLatHem(dms.latParts.hem);
-        setDmsLonDeg(String(dms.lonParts.deg));
-        setDmsLonMin(String(dms.lonParts.min));
-        setDmsLonSec(String(dms.lonParts.sec));
-        setDmsLonHem(dms.lonParts.hem);
-      }
-    }
-  };
-
-  const handleCopy = (text, formatKey) => {
+  const handleCopy = (e, text, formatKey) => {
+    e.stopPropagation();
     navigator.clipboard.writeText(text);
     setCopiedFormat(formatKey);
     setTimeout(() => setCopiedFormat(null), 1800);
@@ -295,136 +250,162 @@ export default function AddThreatModal({
   if (!isOpen) return null;
 
   return (
-    <div 
-      className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4"
-      style={{ zIndex: 99999 }}
-      onClick={onClose}
-    >
-      <div 
-        className="bg-zinc-900 border border-zinc-800 rounded-2xl shadow-2xl max-w-xl w-full p-6 text-zinc-100 flex flex-col max-h-[92vh] overflow-y-auto"
-        onClick={(e) => e.stopPropagation()}
-      >
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-dialog" onClick={(e) => e.stopPropagation()}>
         {/* Modal Header */}
-        <div className="flex items-center justify-between pb-4 border-b border-zinc-800 mb-4">
-          <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-xl bg-blue-500/10 border border-blue-500/20 text-blue-400 flex items-center justify-center flex-shrink-0">
-              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <div className="modal-header">
+          <div className="modal-title-group">
+            <div className="modal-icon-badge">
+              <svg width="20" height="20" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <circle cx="12" cy="12" r="9" strokeWidth="2" />
                 <path strokeLinecap="round" strokeWidth="2" d="M12 3v3m0 12v3M3 12h3m12 0h3" />
               </svg>
             </div>
             <div>
-              <h2 className="text-base font-semibold text-zinc-100">Deploy Threat / Radar Site</h2>
-              <p className="text-xs text-zinc-400">Position radar or observer site via DD, DDM, DMS, or MGRS</p>
+              <h2 className="modal-title">Deploy Threat / Radar Site</h2>
+              <p className="modal-subtitle">Position radar or observer site via MGRS, DD, DDM, or DMS</p>
             </div>
           </div>
           <button
+            type="button"
             onClick={onClose}
-            className="p-1 rounded-lg text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800 transition-colors"
+            className="modal-close-btn"
             aria-label="Close"
           >
-            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <svg width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" />
             </svg>
           </button>
         </div>
 
-        {/* Quick Samples Toolbar */}
-        <div className="flex items-center gap-2 mb-4 flex-wrap text-xs">
-          <span className="text-zinc-500 font-medium">Quick Fill:</span>
-          {PRESET_LOCATIONS.map((preset, idx) => (
-            <button
-              key={idx}
-              type="button"
-              className="px-2.5 py-1 bg-zinc-800/60 hover:bg-zinc-800 text-zinc-300 hover:text-white border border-zinc-700/50 rounded-full transition-colors font-medium text-xs"
-              onClick={() => handleLoadPreset(preset)}
-            >
-              {preset.name.split(' ')[0]} {preset.name.split(' ')[1]}
-            </button>
-          ))}
-        </div>
-
-        {/* Segmented Format Tabs */}
-        <div className="flex p-1 bg-zinc-950 rounded-xl border border-zinc-800/80 mb-4 gap-1">
+        {/* Format Selector Tabs */}
+        <div className="modal-tabs">
           {[
-            { id: 'auto', label: 'Auto-Detect', badge: 'SMART' },
+            { id: 'auto', label: 'Auto-Detect' },
+            { id: 'mgrs', label: 'MGRS Grid' },
             { id: 'dd', label: 'DD' },
             { id: 'ddm', label: 'DDM' },
             { id: 'dms', label: 'DMS' },
-            { id: 'mgrs', label: 'MGRS' },
           ].map((tab) => (
             <button
               key={tab.id}
               type="button"
-              className={`flex-1 py-1.5 px-2 rounded-lg text-xs font-medium transition-all flex items-center justify-center gap-1.5 ${
-                activeTab === tab.id
-                  ? 'bg-zinc-800 text-white shadow-sm border border-zinc-700/60'
-                  : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900/60'
-              }`}
+              className={`modal-tab-btn ${activeTab === tab.id ? 'active' : ''}`}
               onClick={() => handleTabChange(tab.id)}
             >
-              {tab.badge && (
-                <span className="bg-blue-500/20 text-blue-400 border border-blue-500/30 text-[10px] font-bold px-1 rounded">
-                  {tab.badge}
-                </span>
-              )}
-              <span>{tab.label}</span>
+              {tab.label}
             </button>
           ))}
         </div>
 
-        <form onSubmit={handleSubmit} className="flex flex-col gap-4">
+        <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
           {/* Format Input Content Card */}
-          <div className="bg-zinc-950/60 border border-zinc-800/80 rounded-xl p-4">
+          <div className="modal-input-card">
             {activeTab === 'auto' && (
-              <div className="flex flex-col gap-2">
-                <div className="flex justify-between items-center text-xs">
-                  <label className="font-medium text-zinc-300">Single Coordinate String or MGRS Grid</label>
-                  <span className="text-zinc-500">Paste any format freely</span>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                <div className="modal-input-label-row">
+                  <label className="modal-input-label">Coordinate String or MGRS Grid</label>
+                  <span className="modal-input-hint">Paste any format freely</span>
                 </div>
-                <div className="relative flex items-center">
+                <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
                   <input
                     type="text"
-                    className="w-full bg-zinc-900 border border-zinc-700/60 rounded-lg px-3 py-2 text-sm font-mono text-zinc-100 placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-blue-500/40 focus:border-blue-500 transition-colors"
+                    className="modal-text-input"
                     value={autoInput}
                     onChange={(e) => setAutoInput(e.target.value)}
-                    placeholder="e.g. -22.65, 150.15 or 56K KV 07094 92417 or 22° 39.0' S, 150° 09.0' E"
+                    placeholder="e.g. 56K KV 07094 92417 or -22.65, 150.15"
                     autoFocus
                   />
                   {autoInput && (
                     <button
                       type="button"
-                      className="absolute right-2.5 text-zinc-500 hover:text-zinc-300 text-base"
+                      style={{
+                        position: 'absolute',
+                        right: '10px',
+                        background: 'transparent',
+                        border: 'none',
+                        color: '#71717a',
+                        fontSize: '18px',
+                        cursor: 'pointer',
+                        padding: '2px'
+                      }}
                       onClick={() => setAutoInput('')}
                     >
                       &times;
                     </button>
                   )}
                 </div>
-                <div className="flex items-center gap-1.5 flex-wrap text-[11px] text-zinc-500 mt-1">
-                  <span>Examples:</span>
-                  <code className="bg-zinc-800/80 px-1.5 py-0.5 rounded text-zinc-300 font-mono">-22.65, 150.15</code>
-                  <code className="bg-zinc-800/80 px-1.5 py-0.5 rounded text-zinc-300 font-mono">22° 39.00' S, 150° 09.00' E</code>
-                  <code className="bg-zinc-800/80 px-1.5 py-0.5 rounded text-zinc-300 font-mono">56K KV 07094 92417</code>
+                <div className="modal-chips-row">
+                  <span>Try sample:</span>
+                  <button
+                    type="button"
+                    className="modal-chip"
+                    onClick={() => setAutoInput('56K KV 07094 92417')}
+                  >
+                    56K KV 07094 92417
+                  </button>
+                  <button
+                    type="button"
+                    className="modal-chip"
+                    onClick={() => setAutoInput('-22.6500, 150.1500')}
+                  >
+                    -22.6500, 150.1500
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {activeTab === 'mgrs' && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                <div className="modal-input-label-row">
+                  <label className="modal-input-label">Military Grid Reference System (MGRS)</label>
+                  <span className="modal-input-hint">4, 6, 8, or 10-digit grids</span>
+                </div>
+                <input
+                  type="text"
+                  className="modal-text-input"
+                  style={{ letterSpacing: '0.04em' }}
+                  value={mgrsInput}
+                  onChange={(e) => setMgrsInput(e.target.value)}
+                  placeholder="e.g. 56K KV 07094 92417 or 56KKV0709492417"
+                  autoFocus
+                />
+                <div className="modal-chips-row">
+                  <span>Quick grids:</span>
+                  <button
+                    type="button"
+                    className="modal-chip"
+                    onClick={() => setMgrsInput('56K KV 07094 92417')}
+                  >
+                    Alpha: 56K KV 07094 92417
+                  </button>
+                  <button
+                    type="button"
+                    className="modal-chip"
+                    onClick={() => setMgrsInput('56K KV 17469 81389')}
+                  >
+                    Bravo: 56K KV 17469 81389
+                  </button>
                 </div>
               </div>
             )}
 
             {activeTab === 'dd' && (
-              <div className="grid grid-cols-2 gap-3 text-xs">
-                <div className="flex flex-col gap-1.5">
-                  <label className="font-medium text-zinc-300">Latitude (DD)</label>
-                  <div className="flex gap-1.5">
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                  <label className="modal-input-label">Latitude (DD)</label>
+                  <div style={{ display: 'flex', gap: '6px' }}>
                     <input
                       type="number"
                       step="any"
-                      className="flex-1 bg-zinc-900 border border-zinc-700/60 rounded-lg px-3 py-2 text-sm font-mono text-zinc-100 placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-blue-500/40 focus:border-blue-500"
+                      className="modal-text-input"
+                      style={{ flex: 1 }}
                       value={ddLat}
                       onChange={(e) => setDdLat(e.target.value)}
                       placeholder="22.65"
                     />
                     <select
-                      className="bg-zinc-900 border border-zinc-700/60 rounded-lg px-2.5 py-2 text-sm font-semibold text-blue-400 focus:outline-none"
+                      className="modal-select"
                       value={ddLatHem}
                       onChange={(e) => setDdLatHem(e.target.value)}
                     >
@@ -434,19 +415,20 @@ export default function AddThreatModal({
                   </div>
                 </div>
 
-                <div className="flex flex-col gap-1.5">
-                  <label className="font-medium text-zinc-300">Longitude (DD)</label>
-                  <div className="flex gap-1.5">
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                  <label className="modal-input-label">Longitude (DD)</label>
+                  <div style={{ display: 'flex', gap: '6px' }}>
                     <input
                       type="number"
                       step="any"
-                      className="flex-1 bg-zinc-900 border border-zinc-700/60 rounded-lg px-3 py-2 text-sm font-mono text-zinc-100 placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-blue-500/40 focus:border-blue-500"
+                      className="modal-text-input"
+                      style={{ flex: 1 }}
                       value={ddLon}
                       onChange={(e) => setDdLon(e.target.value)}
                       placeholder="150.15"
                     />
                     <select
-                      className="bg-zinc-900 border border-zinc-700/60 rounded-lg px-2.5 py-2 text-sm font-semibold text-blue-400 focus:outline-none"
+                      className="modal-select"
                       value={ddLonHem}
                       onChange={(e) => setDdLonHem(e.target.value)}
                     >
@@ -459,33 +441,36 @@ export default function AddThreatModal({
             )}
 
             {activeTab === 'ddm' && (
-              <div className="grid grid-cols-2 gap-3 text-xs">
-                <div className="flex flex-col gap-1.5">
-                  <label className="font-medium text-zinc-300">Latitude (Deg &amp; Min)</label>
-                  <div className="flex items-center gap-1.5">
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                  <label className="modal-input-label">Latitude (Deg Min)</label>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
                     <input
                       type="number"
                       min="0"
                       max="90"
-                      className="w-16 bg-zinc-900 border border-zinc-700/60 rounded-lg px-2 py-2 text-sm font-mono text-zinc-100 text-center focus:outline-none focus:ring-2 focus:ring-blue-500/40"
+                      className="modal-text-input"
+                      style={{ width: '56px', textAlign: 'center', padding: '8px 4px' }}
                       value={ddmLatDeg}
                       onChange={(e) => setDdmLatDeg(e.target.value)}
                       placeholder="Deg"
                     />
-                    <span className="text-zinc-500 font-bold">&deg;</span>
+                    <span style={{ color: '#71717a', fontWeight: 'bold' }}>&deg;</span>
                     <input
                       type="number"
                       step="any"
                       min="0"
                       max="59.9999"
-                      className="flex-1 bg-zinc-900 border border-zinc-700/60 rounded-lg px-2.5 py-2 text-sm font-mono text-zinc-100 focus:outline-none focus:ring-2 focus:ring-blue-500/40"
+                      className="modal-text-input"
+                      style={{ flex: 1, padding: '8px 8px' }}
                       value={ddmLatMin}
                       onChange={(e) => setDdmLatMin(e.target.value)}
                       placeholder="Minutes"
                     />
-                    <span className="text-zinc-500 font-bold">'</span>
+                    <span style={{ color: '#71717a', fontWeight: 'bold' }}>'</span>
                     <select
-                      className="bg-zinc-900 border border-zinc-700/60 rounded-lg px-2 py-2 text-sm font-semibold text-blue-400 focus:outline-none"
+                      className="modal-select"
+                      style={{ padding: '8px 6px' }}
                       value={ddmLatHem}
                       onChange={(e) => setDdmLatHem(e.target.value)}
                     >
@@ -495,32 +480,35 @@ export default function AddThreatModal({
                   </div>
                 </div>
 
-                <div className="flex flex-col gap-1.5">
-                  <label className="font-medium text-zinc-300">Longitude (Deg &amp; Min)</label>
-                  <div className="flex items-center gap-1.5">
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                  <label className="modal-input-label">Longitude (Deg Min)</label>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
                     <input
                       type="number"
                       min="0"
                       max="180"
-                      className="w-16 bg-zinc-900 border border-zinc-700/60 rounded-lg px-2 py-2 text-sm font-mono text-zinc-100 text-center focus:outline-none focus:ring-2 focus:ring-blue-500/40"
+                      className="modal-text-input"
+                      style={{ width: '56px', textAlign: 'center', padding: '8px 4px' }}
                       value={ddmLonDeg}
                       onChange={(e) => setDdmLonDeg(e.target.value)}
                       placeholder="Deg"
                     />
-                    <span className="text-zinc-500 font-bold">&deg;</span>
+                    <span style={{ color: '#71717a', fontWeight: 'bold' }}>&deg;</span>
                     <input
                       type="number"
                       step="any"
                       min="0"
                       max="59.9999"
-                      className="flex-1 bg-zinc-900 border border-zinc-700/60 rounded-lg px-2.5 py-2 text-sm font-mono text-zinc-100 focus:outline-none focus:ring-2 focus:ring-blue-500/40"
+                      className="modal-text-input"
+                      style={{ flex: 1, padding: '8px 8px' }}
                       value={ddmLonMin}
                       onChange={(e) => setDdmLonMin(e.target.value)}
                       placeholder="Minutes"
                     />
-                    <span className="text-zinc-500 font-bold">'</span>
+                    <span style={{ color: '#71717a', fontWeight: 'bold' }}>'</span>
                     <select
-                      className="bg-zinc-900 border border-zinc-700/60 rounded-lg px-2 py-2 text-sm font-semibold text-blue-400 focus:outline-none"
+                      className="modal-select"
+                      style={{ padding: '8px 6px' }}
                       value={ddmLonHem}
                       onChange={(e) => setDdmLonHem(e.target.value)}
                     >
@@ -533,43 +521,47 @@ export default function AddThreatModal({
             )}
 
             {activeTab === 'dms' && (
-              <div className="grid grid-cols-2 gap-3 text-xs">
-                <div className="flex flex-col gap-1.5">
-                  <label className="font-medium text-zinc-300">Latitude (Deg Min Sec)</label>
-                  <div className="flex items-center gap-1">
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                  <label className="modal-input-label">Latitude (Deg Min Sec)</label>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '3px' }}>
                     <input
                       type="number"
                       min="0"
                       max="90"
-                      className="w-12 bg-zinc-900 border border-zinc-700/60 rounded-lg px-1 py-1.5 text-xs font-mono text-zinc-100 text-center focus:outline-none"
+                      className="modal-text-input"
+                      style={{ width: '42px', textAlign: 'center', padding: '8px 2px', fontSize: '0.78rem' }}
                       value={dmsLatDeg}
                       onChange={(e) => setDmsLatDeg(e.target.value)}
                       placeholder="Deg"
                     />
-                    <span className="text-zinc-500">&deg;</span>
+                    <span style={{ color: '#71717a' }}>&deg;</span>
                     <input
                       type="number"
                       min="0"
                       max="59"
-                      className="w-12 bg-zinc-900 border border-zinc-700/60 rounded-lg px-1 py-1.5 text-xs font-mono text-zinc-100 text-center focus:outline-none"
+                      className="modal-text-input"
+                      style={{ width: '42px', textAlign: 'center', padding: '8px 2px', fontSize: '0.78rem' }}
                       value={dmsLatMin}
                       onChange={(e) => setDmsLatMin(e.target.value)}
                       placeholder="Min"
                     />
-                    <span className="text-zinc-500">'</span>
+                    <span style={{ color: '#71717a' }}>'</span>
                     <input
                       type="number"
                       step="any"
                       min="0"
                       max="59.99"
-                      className="flex-1 bg-zinc-900 border border-zinc-700/60 rounded-lg px-1.5 py-1.5 text-xs font-mono text-zinc-100 focus:outline-none"
+                      className="modal-text-input"
+                      style={{ flex: 1, padding: '8px 4px', fontSize: '0.78rem' }}
                       value={dmsLatSec}
                       onChange={(e) => setDmsLatSec(e.target.value)}
                       placeholder="Sec"
                     />
-                    <span className="text-zinc-500">"</span>
+                    <span style={{ color: '#71717a' }}>"</span>
                     <select
-                      className="bg-zinc-900 border border-zinc-700/60 rounded-lg px-1.5 py-1.5 text-xs font-semibold text-blue-400 focus:outline-none"
+                      className="modal-select"
+                      style={{ padding: '8px 4px', fontSize: '0.78rem' }}
                       value={dmsLatHem}
                       onChange={(e) => setDmsLatHem(e.target.value)}
                     >
@@ -579,42 +571,46 @@ export default function AddThreatModal({
                   </div>
                 </div>
 
-                <div className="flex flex-col gap-1.5">
-                  <label className="font-medium text-zinc-300">Longitude (Deg Min Sec)</label>
-                  <div className="flex items-center gap-1">
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                  <label className="modal-input-label">Longitude (Deg Min Sec)</label>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '3px' }}>
                     <input
                       type="number"
                       min="0"
                       max="180"
-                      className="w-12 bg-zinc-900 border border-zinc-700/60 rounded-lg px-1 py-1.5 text-xs font-mono text-zinc-100 text-center focus:outline-none"
+                      className="modal-text-input"
+                      style={{ width: '42px', textAlign: 'center', padding: '8px 2px', fontSize: '0.78rem' }}
                       value={dmsLonDeg}
                       onChange={(e) => setDmsLonDeg(e.target.value)}
                       placeholder="Deg"
                     />
-                    <span className="text-zinc-500">&deg;</span>
+                    <span style={{ color: '#71717a' }}>&deg;</span>
                     <input
                       type="number"
                       min="0"
                       max="59"
-                      className="w-12 bg-zinc-900 border border-zinc-700/60 rounded-lg px-1 py-1.5 text-xs font-mono text-zinc-100 text-center focus:outline-none"
+                      className="modal-text-input"
+                      style={{ width: '42px', textAlign: 'center', padding: '8px 2px', fontSize: '0.78rem' }}
                       value={dmsLonMin}
                       onChange={(e) => setDmsLonMin(e.target.value)}
                       placeholder="Min"
                     />
-                    <span className="text-zinc-500">'</span>
+                    <span style={{ color: '#71717a' }}>'</span>
                     <input
                       type="number"
                       step="any"
                       min="0"
                       max="59.99"
-                      className="flex-1 bg-zinc-900 border border-zinc-700/60 rounded-lg px-1.5 py-1.5 text-xs font-mono text-zinc-100 focus:outline-none"
+                      className="modal-text-input"
+                      style={{ flex: 1, padding: '8px 4px', fontSize: '0.78rem' }}
                       value={dmsLonSec}
                       onChange={(e) => setDmsLonSec(e.target.value)}
                       placeholder="Sec"
                     />
-                    <span className="text-zinc-500">"</span>
+                    <span style={{ color: '#71717a' }}>"</span>
                     <select
-                      className="bg-zinc-900 border border-zinc-700/60 rounded-lg px-1.5 py-1.5 text-xs font-semibold text-blue-400 focus:outline-none"
+                      className="modal-select"
+                      style={{ padding: '8px 4px', fontSize: '0.78rem' }}
                       value={dmsLonHem}
                       onChange={(e) => setDmsLonHem(e.target.value)}
                     >
@@ -625,111 +621,140 @@ export default function AddThreatModal({
                 </div>
               </div>
             )}
-
-            {activeTab === 'mgrs' && (
-              <div className="flex flex-col gap-2">
-                <div className="flex justify-between items-center text-xs">
-                  <label className="font-medium text-zinc-300">Military Grid Reference System (MGRS)</label>
-                  <span className="text-zinc-500">4, 6, 8, or 10-digit grids</span>
-                </div>
-                <input
-                  type="text"
-                  className="w-full bg-zinc-900 border border-zinc-700/60 rounded-lg px-3 py-2 text-sm font-mono text-zinc-100 placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-blue-500/40 focus:border-blue-500 transition-colors"
-                  value={mgrsInput}
-                  onChange={(e) => setMgrsInput(e.target.value)}
-                  placeholder="e.g. 56K KV 07094 92417 or 56KKV0709492417"
-                />
-              </div>
-            )}
           </div>
 
           {/* Real-time Conversion & Validation Card */}
-          <div className={`p-4 rounded-xl border transition-colors ${
-            parsedCoord.valid 
-              ? 'bg-zinc-950/70 border-zinc-800' 
-              : 'bg-rose-500/5 border-rose-500/20'
-          }`}>
-            <div className="flex items-center justify-between mb-3">
-              <div className="flex items-center gap-2">
-                <span className={`w-2 h-2 rounded-full ${parsedCoord.valid ? 'bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.5)]' : 'bg-rose-400'}`}></span>
-                <span className={`text-xs font-semibold uppercase tracking-wider ${parsedCoord.valid ? 'text-emerald-400' : 'text-rose-400'}`}>
+          <div className={`modal-breakdown-card ${parsedCoord.valid ? '' : 'invalid'}`}>
+            <div className="modal-breakdown-header">
+              <div className="modal-status-pill">
+                <span className={`modal-status-dot ${parsedCoord.valid ? 'valid' : 'invalid'}`}></span>
+                <span style={{
+                  color: parsedCoord.valid ? '#4ade80' : '#fb7185',
+                  textTransform: 'uppercase',
+                  letterSpacing: '0.05em'
+                }}>
                   {parsedCoord.valid ? `Valid Position (${parsedCoord.detectedFormat})` : 'Invalid Coordinate'}
                 </span>
               </div>
               {parsedCoord.valid && (
-                <span className="text-xs font-mono text-zinc-400">
+                <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: '0.75rem', color: '#a1a1aa' }}>
                   {parsedCoord.lat.toFixed(5)}&deg;, {parsedCoord.lon.toFixed(5)}&deg;
                 </span>
               )}
             </div>
 
             {parsedCoord.valid ? (
-              <div className="grid grid-cols-2 gap-2 text-xs">
-                <div 
-                  className="bg-zinc-900 border border-zinc-800/80 rounded-lg p-2.5 hover:border-zinc-700 transition-colors cursor-pointer group"
-                  onClick={() => handleCopy(parsedCoord.representations.mgrs, 'mgrs')}
+              <div className="modal-grid-2x2">
+                {/* MGRS Card */}
+                <div
+                  className="modal-coord-card"
+                  onClick={(e) => handleCopy(e, parsedCoord.representations.mgrs, 'mgrs')}
+                  title="Click to copy MGRS grid"
                 >
-                  <span className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wider block mb-1">MGRS Grid</span>
-                  <div className="flex items-center justify-between gap-1">
-                    <span className="font-mono text-blue-400 truncate">{parsedCoord.representations.mgrs}</span>
-                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-zinc-800 group-hover:bg-zinc-700 text-zinc-300 border border-zinc-700/60 font-medium">
+                  <div className="modal-coord-card-top">
+                    <span className="modal-coord-title">MGRS Grid</span>
+                    <button
+                      type="button"
+                      className={`modal-coord-copy-btn ${copiedFormat === 'mgrs' ? 'copied' : ''}`}
+                      onClick={(e) => handleCopy(e, parsedCoord.representations.mgrs, 'mgrs')}
+                    >
                       {copiedFormat === 'mgrs' ? '✓ Copied' : 'Copy'}
-                    </span>
+                    </button>
+                  </div>
+                  <div className="modal-coord-val mgrs">
+                    {parsedCoord.representations.mgrs}
                   </div>
                 </div>
 
-                <div 
-                  className="bg-zinc-900 border border-zinc-800/80 rounded-lg p-2.5 hover:border-zinc-700 transition-colors cursor-pointer group"
-                  onClick={() => handleCopy(parsedCoord.representations.dd, 'dd')}
+                {/* DD Card */}
+                <div
+                  className="modal-coord-card"
+                  onClick={(e) => handleCopy(e, parsedCoord.representations.dd, 'dd')}
+                  title="Click to copy Decimal Degrees"
                 >
-                  <span className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wider block mb-1">Decimal Degrees (DD)</span>
-                  <div className="flex items-center justify-between gap-1">
-                    <span className="font-mono text-zinc-200 truncate">{parsedCoord.representations.dd}</span>
-                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-zinc-800 group-hover:bg-zinc-700 text-zinc-300 border border-zinc-700/60 font-medium">
+                  <div className="modal-coord-card-top">
+                    <span className="modal-coord-title">Decimal Degrees (DD)</span>
+                    <button
+                      type="button"
+                      className={`modal-coord-copy-btn ${copiedFormat === 'dd' ? 'copied' : ''}`}
+                      onClick={(e) => handleCopy(e, parsedCoord.representations.dd, 'dd')}
+                    >
                       {copiedFormat === 'dd' ? '✓ Copied' : 'Copy'}
-                    </span>
+                    </button>
+                  </div>
+                  <div className="modal-coord-val">
+                    {parsedCoord.representations.dd}
                   </div>
                 </div>
 
-                <div 
-                  className="bg-zinc-900 border border-zinc-800/80 rounded-lg p-2.5 hover:border-zinc-700 transition-colors cursor-pointer group"
-                  onClick={() => handleCopy(parsedCoord.representations.ddm, 'ddm')}
+                {/* DDM Card */}
+                <div
+                  className="modal-coord-card"
+                  onClick={(e) => handleCopy(e, parsedCoord.representations.ddm, 'ddm')}
+                  title="Click to copy Deg Decimal Min"
                 >
-                  <span className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wider block mb-1">Deg Decimal Min (DDM)</span>
-                  <div className="flex items-center justify-between gap-1">
-                    <span className="font-mono text-zinc-200 truncate">{parsedCoord.representations.ddm}</span>
-                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-zinc-800 group-hover:bg-zinc-700 text-zinc-300 border border-zinc-700/60 font-medium">
+                  <div className="modal-coord-card-top">
+                    <span className="modal-coord-title">Deg Decimal Min (DDM)</span>
+                    <button
+                      type="button"
+                      className={`modal-coord-copy-btn ${copiedFormat === 'ddm' ? 'copied' : ''}`}
+                      onClick={(e) => handleCopy(e, parsedCoord.representations.ddm, 'ddm')}
+                    >
                       {copiedFormat === 'ddm' ? '✓ Copied' : 'Copy'}
-                    </span>
+                    </button>
+                  </div>
+                  <div className="modal-coord-val">
+                    {parsedCoord.representations.ddm}
                   </div>
                 </div>
 
-                <div 
-                  className="bg-zinc-900 border border-zinc-800/80 rounded-lg p-2.5 hover:border-zinc-700 transition-colors cursor-pointer group"
-                  onClick={() => handleCopy(parsedCoord.representations.dms, 'dms')}
+                {/* DMS Card */}
+                <div
+                  className="modal-coord-card"
+                  onClick={(e) => handleCopy(e, parsedCoord.representations.dms, 'dms')}
+                  title="Click to copy Deg Min Sec"
                 >
-                  <span className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wider block mb-1">Deg Min Sec (DMS)</span>
-                  <div className="flex items-center justify-between gap-1">
-                    <span className="font-mono text-zinc-200 truncate">{parsedCoord.representations.dms}</span>
-                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-zinc-800 group-hover:bg-zinc-700 text-zinc-300 border border-zinc-700/60 font-medium">
+                  <div className="modal-coord-card-top">
+                    <span className="modal-coord-title">Deg Min Sec (DMS)</span>
+                    <button
+                      type="button"
+                      className={`modal-coord-copy-btn ${copiedFormat === 'dms' ? 'copied' : ''}`}
+                      onClick={(e) => handleCopy(e, parsedCoord.representations.dms, 'dms')}
+                    >
                       {copiedFormat === 'dms' ? '✓ Copied' : 'Copy'}
-                    </span>
+                    </button>
+                  </div>
+                  <div className="modal-coord-val">
+                    {parsedCoord.representations.dms}
                   </div>
                 </div>
               </div>
             ) : (
-              <p className="text-xs text-rose-400 font-medium">{parsedCoord.error}</p>
+              <p style={{ fontSize: '0.75rem', color: '#fb7185', margin: 0 }}>
+                {parsedCoord.error}
+              </p>
             )}
 
             {/* DEM Coverage Status */}
             {demCoverageStatus && (
-              <div className={`mt-3 p-2.5 rounded-lg text-xs flex items-center gap-2 border ${
-                demCoverageStatus.status === 'inside'
-                  ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-300'
-                  : (demCoverageStatus.status === 'outside'
-                    ? 'bg-amber-500/10 border-amber-500/20 text-amber-300'
-                    : 'bg-zinc-800/50 border-zinc-700/50 text-zinc-300')
-              }`}>
+              <div style={{
+                marginTop: '4px',
+                padding: '8px 10px',
+                borderRadius: '8px',
+                fontSize: '0.72rem',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px',
+                background: demCoverageStatus.status === 'inside'
+                  ? 'rgba(16, 185, 129, 0.1)'
+                  : (demCoverageStatus.status === 'outside' ? 'rgba(245, 158, 11, 0.1)' : 'rgba(39, 39, 42, 0.6)'),
+                border: `1px solid ${demCoverageStatus.status === 'inside'
+                  ? 'rgba(16, 185, 129, 0.25)'
+                  : (demCoverageStatus.status === 'outside' ? 'rgba(245, 158, 11, 0.25)' : 'rgba(63, 63, 70, 0.4)')}`,
+                color: demCoverageStatus.status === 'inside'
+                  ? '#34d399'
+                  : (demCoverageStatus.status === 'outside' ? '#fbbf24' : '#d4d4d8')
+              }}>
                 <span>{demCoverageStatus.status === 'inside' ? '✓' : (demCoverageStatus.status === 'outside' ? '⚠️' : 'ℹ️')}</span>
                 <span>{demCoverageStatus.message}</span>
               </div>
@@ -737,37 +762,50 @@ export default function AddThreatModal({
           </div>
 
           {/* Threat Site Parameters */}
-          <div className="bg-zinc-950/60 border border-zinc-800/80 rounded-xl p-4 flex flex-col gap-3">
-            <span className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">Radar / Threat Site Parameters</span>
+          <div className="modal-params-card">
+            <span className="modal-params-title">Radar / Threat Site Parameters</span>
 
-            <div className="grid grid-cols-2 gap-3 text-xs">
-              <div className="flex flex-col gap-1.5">
-                <label className="font-medium text-zinc-300">Threat / Site Name</label>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                <label className="modal-input-label">Threat / Site Name</label>
                 <input
                   type="text"
-                  className="bg-zinc-900 border border-zinc-700/60 rounded-lg px-3 py-2 text-sm text-zinc-100 placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-blue-500/40"
+                  className="modal-text-input"
+                  style={{ fontFamily: 'inherit', fontSize: '0.82rem' }}
                   value={threatName}
                   onChange={(e) => setThreatName(e.target.value)}
                   placeholder="e.g. Radar Site Alpha"
                 />
               </div>
 
-              <div className="flex flex-col gap-1.5">
-                <label className="font-medium text-zinc-300">Marker Color</label>
-                <div className="flex items-center gap-2 h-9">
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                <label className="modal-input-label">Marker Color</label>
+                <div className="modal-colors-row" style={{ height: '36px' }}>
                   {COLOR_PALETTE.map((c) => (
                     <button
                       key={c}
                       type="button"
-                      className={`w-6 h-6 rounded-full transition-transform ${color === c ? 'ring-2 ring-white scale-110' : 'hover:scale-105'}`}
+                      className={`modal-color-swatch ${color === c ? 'active' : ''}`}
                       style={{ backgroundColor: c }}
                       onClick={() => setColor(c)}
                       aria-label={`Select color ${c}`}
                     />
                   ))}
+                  {/* Custom color circle button */}
+                  <button
+                    type="button"
+                    className={`modal-custom-color-btn ${!COLOR_PALETTE.includes(color) ? 'active' : ''}`}
+                    style={!COLOR_PALETTE.includes(color) ? { backgroundColor: color, color: '#fff' } : {}}
+                    onClick={() => colorInputRef.current?.click()}
+                    title="Choose custom color"
+                    aria-label="Choose custom color"
+                  >
+                    {!COLOR_PALETTE.includes(color) ? '✓' : '+'}
+                  </button>
                   <input
+                    ref={colorInputRef}
                     type="color"
-                    className="w-7 h-7 rounded-lg border border-zinc-700/60 bg-transparent cursor-pointer ml-1"
+                    style={{ position: 'absolute', opacity: 0, width: 0, height: 0, pointerEvents: 'none' }}
                     value={color}
                     onChange={(e) => setColor(e.target.value)}
                   />
@@ -775,11 +813,13 @@ export default function AddThreatModal({
               </div>
             </div>
 
-            <div className="grid grid-cols-2 gap-3 text-xs">
-              <div className="flex flex-col gap-1.5">
-                <div className="flex justify-between items-center">
-                  <span className="font-medium text-zinc-300">Observer Height</span>
-                  <span className="font-mono text-blue-400 font-semibold">{obsHeight}m ({Math.round(obsHeight / 0.3048)}ft)</span>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span className="modal-input-label">Observer Height</span>
+                  <span style={{ fontFamily: "'JetBrains Mono', monospace", color: '#38bdf8', fontWeight: 600, fontSize: '0.75rem' }}>
+                    {obsHeight}m ({Math.round(obsHeight / 0.3048)}ft)
+                  </span>
                 </div>
                 <input
                   type="range"
@@ -788,14 +828,16 @@ export default function AddThreatModal({
                   step="1"
                   value={obsHeight}
                   onChange={(e) => setObsHeight(Number(e.target.value))}
-                  className="accent-blue-500 cursor-pointer"
+                  style={{ accentColor: '#2563eb', cursor: 'pointer', width: '100%' }}
                 />
               </div>
 
-              <div className="flex flex-col gap-1.5">
-                <div className="flex justify-between items-center">
-                  <span className="font-medium text-zinc-300">Radar Range</span>
-                  <span className="font-mono text-blue-400 font-semibold">{(range / 1000).toFixed(1)}km ({range}m)</span>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span className="modal-input-label">Radar Range</span>
+                  <span style={{ fontFamily: "'JetBrains Mono', monospace", color: '#38bdf8', fontWeight: 600, fontSize: '0.75rem' }}>
+                    {(range / 1000).toFixed(1)}km ({range}m)
+                  </span>
                 </div>
                 <input
                   type="range"
@@ -804,17 +846,17 @@ export default function AddThreatModal({
                   step="500"
                   value={range}
                   onChange={(e) => setRange(Number(e.target.value))}
-                  className="accent-blue-500 cursor-pointer"
+                  style={{ accentColor: '#2563eb', cursor: 'pointer', width: '100%' }}
                 />
               </div>
             </div>
           </div>
 
           {/* Modal Actions */}
-          <div className="flex items-center justify-end gap-3 pt-2">
+          <div className="modal-footer">
             <button
               type="button"
-              className="px-4 py-2 text-sm font-medium text-zinc-300 bg-zinc-800 hover:bg-zinc-700 active:bg-zinc-600 border border-zinc-700/60 rounded-lg transition-colors"
+              className="modal-btn-cancel"
               onClick={onClose}
             >
               Cancel
@@ -822,9 +864,9 @@ export default function AddThreatModal({
             <button
               type="submit"
               disabled={!parsedCoord.valid}
-              className="px-5 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-500 active:bg-blue-700 rounded-lg shadow-sm transition-all disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-2"
+              className="modal-btn-deploy"
             >
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <svg width="15" height="15" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <circle cx="12" cy="12" r="9" strokeWidth="2" />
                 <path strokeLinecap="round" strokeWidth="2" d="M12 7v10m-5-5h10" />
               </svg>

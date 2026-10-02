@@ -30,3 +30,12 @@ html, body, #root {
 input, button, select, textarea {
   font-family: inherit;
 }
+
+button {
+  background: transparent;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
+}
