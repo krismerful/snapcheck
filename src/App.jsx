@@ -4,6 +4,7 @@ import AddThreatModal from './components/AddThreatModal';
 import { parseGeoTiff } from './utils/geotiffLoader';
 import { exportMissionKmz } from './utils/kmzExporter';
 import { toMGRS } from './utils/coordinates';
+import { saveDemToCache, getCachedDem, clearDemCache, formatBytes } from './utils/demCache';
 import './App.css';
 
 // Default altitude tiers for tactical Line of Sight
@@ -19,6 +20,10 @@ function App() {
   const [demLoading, setDemLoading] = useState(false);
   const [demProgress, setDemProgress] = useState(null); // { stage, percent, text }
   const [triggerFitBounds, setTriggerFitBounds] = useState(0);
+
+  // --- DEM Persistent Browser Cache State ---
+  const [cachedDemInfo, setCachedDemInfo] = useState(null); // { fileName, size, updatedAt }
+  const [isDemCached, setIsDemCached] = useState(false);
 
   // --- Web Worker Reference ---
   const workerRef = useRef(null);
@@ -67,7 +72,103 @@ function App() {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  // Initialize Web Worker
+  // Handle loading and parsing a GeoTIFF (File or ArrayBuffer)
+  const processGeoTiffSource = async (source, fileName = 'Copernicus_DEM.tif', isFromCache = false, workerInstance = null) => {
+    const targetWorker = workerInstance || workerRef.current;
+    try {
+      setDemLoading(true);
+      setDemProgress({
+        stage: 'reading',
+        percent: 10,
+        text: isFromCache ? `Restoring cached ${fileName}...` : `Loading ${fileName}...`
+      });
+
+      const parsed = await parseGeoTiff(source, (p) => {
+        setDemProgress({
+          stage: p.stage,
+          percent: p.percent,
+          text: p.stage === 'reading_file' ? (isFromCache ? 'Reading cached DEM buffer...' : 'Reading file buffer...')
+              : p.stage === 'parsing_geotiff' ? 'Parsing GeoTIFF tags & bounds...'
+              : p.stage === 'reading_rasters' ? 'Decompressing 30m elevation rasters...'
+              : 'Transferring raster buffer to Web Worker...'
+        });
+      });
+
+      const meta = {
+        fileName: fileName,
+        width: parsed.width,
+        height: parsed.height,
+        bbox: parsed.bbox,
+        noData: parsed.noData
+      };
+
+      setDemMetadata(meta);
+
+      // Persist to IndexedDB if newly loaded file/blob
+      if (!isFromCache && (source instanceof Blob || source instanceof File)) {
+        await saveDemToCache(source, meta);
+        setIsDemCached(true);
+        setCachedDemInfo({
+          fileName: fileName,
+          size: source.size || 0,
+          updatedAt: Date.now()
+        });
+      } else if (isFromCache) {
+        setIsDemCached(true);
+      }
+
+      // Transfer ArrayBuffer to Web Worker as transferable object
+      setDemProgress({ stage: 'transferring', percent: 90, text: 'Transferring raster to Web Worker...' });
+      if (targetWorker) {
+        targetWorker.postMessage(
+          {
+            type: 'LOAD_DEM',
+            data: {
+              buffer: parsed.buffer,
+              width: parsed.width,
+              height: parsed.height,
+              bbox: parsed.bbox,
+              noData: parsed.noData
+            }
+          },
+          [parsed.buffer]
+        );
+      }
+    } catch (err) {
+      console.error('Failed to parse GeoTIFF:', err);
+      setDemLoading(false);
+      setDemProgress(null);
+      if (isFromCache) {
+        // If cached file was corrupted, clean up cache so user can load anew
+        clearDemCache();
+        setIsDemCached(false);
+        setCachedDemInfo(null);
+      }
+      alert(`Failed to load GeoTIFF: ${err.message}`);
+    }
+  };
+
+  // Remove / Clear cached DEM from browser storage
+  const handleClearCachedDem = async () => {
+    try {
+      await clearDemCache();
+      setIsDemCached(false);
+      setCachedDemInfo(null);
+      setDemMetadata(null);
+      setViewshedLayers([]);
+      setLastRawResults(null);
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
+      if (workerRef.current) {
+        workerRef.current.postMessage({ type: 'CLEAR_DEM' });
+      }
+    } catch (err) {
+      console.error('Failed to clear cached DEM:', err);
+    }
+  };
+
+  // Initialize Web Worker & check cached DEM for auto-load on startup
   useEffect(() => {
     const worker = new Worker(new URL('./workers/losWorker.js', import.meta.url), {
       type: 'module'
@@ -80,6 +181,8 @@ function App() {
         setDemLoading(false);
         setDemProgress(null);
         setTriggerFitBounds(prev => prev + 1);
+      } else if (type === 'DEM_CLEARED') {
+        // DEM cleared inside worker
       } else if (type === 'LOS_PROGRESS') {
         setAnalysisProgress(data);
       } else if (type === 'LOS_ANALYSIS_COMPLETE') {
@@ -130,58 +233,33 @@ function App() {
 
     workerRef.current = worker;
 
+    // Check IndexedDB cache and auto-load on startup
+    let isCancelled = false;
+    async function autoLoadCache() {
+      try {
+        const cached = await getCachedDem();
+        if (isCancelled || !cached || !cached.blob) return;
+
+        setCachedDemInfo({
+          fileName: cached.name,
+          size: cached.size || cached.blob.size || 0,
+          updatedAt: cached.updatedAt
+        });
+        setIsDemCached(true);
+
+        await processGeoTiffSource(cached.blob, cached.name, true /* isFromCache */, worker);
+      } catch (err) {
+        console.warn('Auto-load cached DEM error:', err);
+      }
+    }
+
+    autoLoadCache();
+
     return () => {
+      isCancelled = true;
       worker.terminate();
     };
   }, []);
-
-  // Handle loading and parsing a GeoTIFF (File or ArrayBuffer)
-  const processGeoTiffSource = async (source, fileName = 'Copernicus_DEM.tif') => {
-    try {
-      setDemLoading(true);
-      setDemProgress({ stage: 'reading', percent: 10, text: `Loading ${fileName}...` });
-
-      const parsed = await parseGeoTiff(source, (p) => {
-        setDemProgress({
-          stage: p.stage,
-          percent: p.percent,
-          text: p.stage === 'reading_file' ? 'Reading file buffer...'
-              : p.stage === 'parsing_geotiff' ? 'Parsing GeoTIFF tags & bounds...'
-              : p.stage === 'reading_rasters' ? 'Decompressing 30m elevation rasters...'
-              : 'Transferring raster buffer to Web Worker...'
-        });
-      });
-
-      setDemMetadata({
-        fileName: fileName,
-        width: parsed.width,
-        height: parsed.height,
-        bbox: parsed.bbox,
-        noData: parsed.noData
-      });
-
-      // Transfer ArrayBuffer to Web Worker as transferable object
-      setDemProgress({ stage: 'transferring', percent: 90, text: 'Transferring raster to Web Worker...' });
-      workerRef.current.postMessage(
-        {
-          type: 'LOAD_DEM',
-          data: {
-            buffer: parsed.buffer,
-            width: parsed.width,
-            height: parsed.height,
-            bbox: parsed.bbox,
-            noData: parsed.noData
-          }
-        },
-        [parsed.buffer]
-      );
-    } catch (err) {
-      console.error('Failed to parse GeoTIFF:', err);
-      setDemLoading(false);
-      setDemProgress(null);
-      alert(`Failed to load GeoTIFF: ${err.message}`);
-    }
-  };
 
   // Handle file input change
   const handleFileChange = (e) => {
@@ -209,27 +287,6 @@ function App() {
       processGeoTiffSource(file, file.name);
     } else {
       alert('Please drop a valid .tif or .tiff Copernicus DEM file.');
-    }
-  };
-
-  // Load SWBTA.tif directly from local public/
-  const handleLoadSampleSwbta = async () => {
-    try {
-      setDemLoading(true);
-      setDemProgress({ stage: 'fetching', percent: 5, text: 'Fetching local SWBTA.tif...' });
-
-      const response = await fetch('/SWBTA.tif');
-      if (!response.ok) {
-        throw new Error(`Failed to fetch /SWBTA.tif (Status: ${response.status})`);
-      }
-
-      const blob = await response.blob();
-      await processGeoTiffSource(blob, 'SWBTA.tif (Copernicus GLO-30)');
-    } catch (err) {
-      console.error('Error fetching SWBTA.tif:', err);
-      setDemLoading(false);
-      setDemProgress(null);
-      alert('Could not load local SWBTA.tif. Please drag & drop the file directly.');
     }
   };
 
@@ -496,20 +553,33 @@ function App() {
                 </svg>
               </div>
               <div className="dropzone-text-primary">Drop Copernicus GLO-30 GeoTIFF</div>
-              <div className="dropzone-text-sub">Supports 30m .tif / .tiff with 2024 tree canopy</div>
+              <div className="dropzone-text-sub">Supports 30m .tif / .tiff • Cached locally for auto-load</div>
               <button className="btn-browse-file" type="button">Select File</button>
             </div>
           ) : (
-            <div className="dem-telemetry-card">
+            <div
+              className={`dem-telemetry-card ${isDraggingOver ? 'dragging' : ''}`}
+              onDragOver={handleDragOver}
+              onDragLeave={handleDragLeave}
+              onDrop={handleDrop}
+            >
               <div className="dem-file-row">
-                <div className="dem-file-icon">
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                    <polygon points="12 2 2 7 12 12 22 7 12 2" />
-                    <polyline points="2 17 12 22 22 17" />
-                    <polyline points="2 12 12 17 22 12" />
-                  </svg>
+                <div className="dem-file-info">
+                  <div className="dem-file-icon">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <polygon points="12 2 2 7 12 12 22 7 12 2" />
+                      <polyline points="2 17 12 22 22 17" />
+                      <polyline points="2 12 12 17 22 12" />
+                    </svg>
+                  </div>
+                  <div className="dem-filename" title={demMetadata.fileName}>{demMetadata.fileName}</div>
                 </div>
-                <div className="dem-filename" title={demMetadata.fileName}>{demMetadata.fileName}</div>
+                {isDemCached && (
+                  <span className="dem-cache-badge" title="DEM is cached locally in browser IndexedDB for automatic startup reload">
+                    <span className="dem-cache-dot"></span>
+                    CACHED {cachedDemInfo?.size ? `(${formatBytes(cachedDemInfo.size)})` : ''}
+                  </span>
+                )}
               </div>
 
               <div className="dem-stats-matrix">
@@ -522,8 +592,8 @@ function App() {
                   <span className="stat-pill-val">30m GLO-30</span>
                 </div>
                 <div className="stat-pill">
-                  <span className="stat-pill-label">CANOPY</span>
-                  <span className="stat-pill-val">2024 Trees</span>
+                  <span className="stat-pill-label">STORAGE</span>
+                  <span className="stat-pill-val">{isDemCached ? 'IndexedDB' : 'Session'}</span>
                 </div>
                 <div className="stat-pill">
                   <span className="stat-pill-label">DATUM</span>
@@ -546,14 +616,25 @@ function App() {
                 <button
                   className="btn-dem-sub secondary"
                   onClick={() => fileInputRef.current?.click()}
-                  title="Load New DEM File"
+                  title="Load New DEM File (Overwrites cache)"
                 >
                   <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                     <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
                     <polyline points="17 8 12 3 7 8" />
                     <line x1="12" y1="3" x2="12" y2="15" />
                   </svg>
-                  Replace DEM
+                  Replace
+                </button>
+                <button
+                  className="btn-dem-sub danger"
+                  onClick={handleClearCachedDem}
+                  title="Remove cached DEM from browser storage"
+                >
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <polyline points="3 6 5 6 21 6" />
+                    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                  </svg>
+                  Remove
                 </button>
                 <input
                   ref={fileInputRef}
@@ -564,22 +645,6 @@ function App() {
                 />
               </div>
             </div>
-          )}
-
-          {/* Quick-load Sample DEM Button */}
-          {!demMetadata && (
-            <button
-              className="btn-load-sample"
-              onClick={handleLoadSampleSwbta}
-              disabled={demLoading}
-            >
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <polygon points="1 6 1 22 8 18 16 22 23 18 23 2 16 6 8 2 1 6"></polygon>
-                <line x1="8" y1="2" x2="8" y2="18"></line>
-                <line x1="16" y1="6" x2="16" y2="22"></line>
-              </svg>
-              Load Sample Area (SWBTA Australia)
-            </button>
           )}
 
           {demLoading && demProgress && (

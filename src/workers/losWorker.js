@@ -312,6 +312,19 @@ self.onmessage = function (event) {
         break;
       }
 
+      case 'CLEAR_DEM': {
+        demState = {
+          elevationData: null,
+          width: 0,
+          height: 0,
+          bbox: null,
+          noData: null,
+          sampler: null
+        };
+        self.postMessage({ type: 'DEM_CLEARED' });
+        break;
+      }
+
       case 'GET_ELEVATION': {
         const { id, lat, lon } = data;
         if (!demState.sampler) {
