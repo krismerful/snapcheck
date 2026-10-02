@@ -14,6 +14,7 @@ import {
 } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
+import { toMGRS, toDD, toDDM, toDMS } from '../utils/coordinates';
 
 // Fix Leaflet's default marker icons in Vite/bundlers
 delete L.Icon.Default.prototype._getIconUrl;
@@ -54,8 +55,8 @@ function escapeHtml(text) {
     .replace(/"/g, '&quot;');
 }
 
-// Controller component to zoom and center when DEM bounds change
-function MapController({ demBbox, triggerFitBounds }) {
+// Controller component to zoom and center when DEM bounds change or threat focused
+function MapController({ demBbox, triggerFitBounds, focusTarget }) {
   const map = useMap();
 
   useEffect(() => {
@@ -71,6 +72,14 @@ function MapController({ demBbox, triggerFitBounds }) {
     }
   }, [demBbox, triggerFitBounds, map]);
 
+  useEffect(() => {
+    if (focusTarget && focusTarget.lat !== undefined && focusTarget.lon !== undefined) {
+      map.flyTo([focusTarget.lat, focusTarget.lon], Math.max(map.getZoom(), 12), {
+        duration: 1.2
+      });
+    }
+  }, [focusTarget, map]);
+
   return null;
 }
 
@@ -82,6 +91,7 @@ const MapComponent = ({
   onUpdateThreatName,
   demBbox = null,
   triggerFitBounds = 0,
+  focusTarget = null,
   visibleTiers = { '50ft': true, '200ft': true, '500ft': true, 'custom': true },
   showRangeRings = true
 }) => {
@@ -115,7 +125,7 @@ const MapComponent = ({
         zoom={SWBTA_DEFAULT_ZOOM}
         style={{ height: '100%', width: '100%' }}
       >
-        <MapController demBbox={demBbox} triggerFitBounds={triggerFitBounds} />
+        <MapController demBbox={demBbox} triggerFitBounds={triggerFitBounds} focusTarget={focusTarget} />
 
         <LayersControl position="topright">
           <BaseLayer checked name="Satellite Imagery (Esri)">
@@ -203,9 +213,21 @@ const MapComponent = ({
                 </div>
 
                 <div className="popup-stats-grid">
+                  <div className="popup-stat-cell highlight-cell">
+                    <span className="stat-label">MGRS GRID</span>
+                    <span className="stat-value text-cyan font-mono">{toMGRS(threat.lat, threat.lon)}</span>
+                  </div>
                   <div className="popup-stat-cell">
-                    <span className="stat-label">COORDINATES</span>
-                    <span className="stat-value">{threat.lat.toFixed(4)}&deg;, {threat.lon.toFixed(4)}&deg;</span>
+                    <span className="stat-label">DECIMAL DEGREES (DD)</span>
+                    <span className="stat-value font-mono">{toDD(threat.lat, threat.lon).formatted}</span>
+                  </div>
+                  <div className="popup-stat-cell">
+                    <span className="stat-label">DEG DECIMAL MIN (DDM)</span>
+                    <span className="stat-value font-mono">{toDDM(threat.lat, threat.lon).formatted}</span>
+                  </div>
+                  <div className="popup-stat-cell">
+                    <span className="stat-label">DEG MIN SEC (DMS)</span>
+                    <span className="stat-value font-mono">{toDMS(threat.lat, threat.lon).formatted}</span>
                   </div>
                   <div className="popup-stat-cell">
                     <span className="stat-label">OBSERVER HEIGHT</span>

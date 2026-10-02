@@ -1,7 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
 import MapComponent from './components/MapComponent';
+import AddThreatModal from './components/AddThreatModal';
 import { parseGeoTiff } from './utils/geotiffLoader';
 import { exportMissionKmz } from './utils/kmzExporter';
+import { toMGRS } from './utils/coordinates';
 import './App.css';
 
 // Default altitude tiers for tactical Line of Sight
@@ -26,6 +28,8 @@ function App() {
   const [defaultObsHeight, setDefaultObsHeight] = useState(10); // meters (e.g. 33 ft)
   const [defaultRange, setDefaultRange] = useState(5000); // meters (e.g. 5 km)
   const [defaultThreatColor, setDefaultThreatColor] = useState('#FF3333');
+  const [isAddThreatModalOpen, setIsAddThreatModalOpen] = useState(false);
+  const [focusTarget, setFocusTarget] = useState(null);
 
   // --- Altitude Tiers State ---
   const [altitudeTiers, setAltitudeTiers] = useState(DEFAULT_ALTITUDE_TIERS);
@@ -263,42 +267,37 @@ function App() {
     setViewshedLayers(prev => prev.map(l => l.id === id ? { ...l, threatName: newName } : l));
   };
 
-  // Load tactical sample threats in SWBTA area
-  const handleLoadSampleThreats = () => {
-    const presets = [
-      {
-        id: Date.now() + 1,
-        name: 'Radar Alpha (Falcon E)',
-        lat: -22.65,
-        lon: 150.15,
-        obsHeight: 12,
-        range: 6000,
-        color: '#FF3333',
-        enabled: true
-      },
-      {
-        id: Date.now() + 2,
-        name: 'SAM Site Bravo (Eagle)',
-        lat: -22.75,
-        lon: 150.25,
-        obsHeight: 10,
-        range: 5000,
-        color: '#FF9900',
-        enabled: true
-      },
-      {
-        id: Date.now() + 3,
-        name: 'Observation Post Charlie',
-        lat: -22.58,
-        lon: 150.05,
-        obsHeight: 15,
-        range: 4500,
-        color: '#FFFF00',
-        enabled: true
+  // Deploy threat from coordinate / MGRS modal
+  const handleAddThreatFromModal = (threatData) => {
+    if (demMetadata && demMetadata.bbox) {
+      const [minX, minY, maxX, maxY] = demMetadata.bbox;
+      if (threatData.lon < minX || threatData.lon > maxX || threatData.lat < minY || threatData.lat > maxY) {
+        alert('Notice: Deployed threat is outside current DEM coverage area. Viewshed analysis will require DEM coverage in this area.');
       }
-    ];
-    setThreats(presets);
+    }
+
+    const threatId = Date.now();
+    const newThreat = {
+      id: threatId,
+      name: threatData.name || `Threat ${threats.length + 1}`,
+      lat: threatData.lat,
+      lon: threatData.lon,
+      obsHeight: threatData.obsHeight !== undefined ? threatData.obsHeight : defaultObsHeight,
+      range: threatData.range !== undefined ? threatData.range : defaultRange,
+      color: threatData.color || defaultThreatColor,
+      enabled: true,
+      groundElev: null
+    };
+
+    setThreats(prev => [...prev, newThreat]);
+    setFocusTarget({ lat: threatData.lat, lon: threatData.lon, ts: Date.now() });
   };
+
+  // Focus map on specific threat
+  const handleFocusThreat = (threat) => {
+    setFocusTarget({ lat: threat.lat, lon: threat.lon, ts: Date.now() });
+  };
+
 
   // Run LOS Analysis
   const handleRunLosAnalysis = () => {
@@ -602,16 +601,16 @@ function App() {
             <span className="section-label">Threat Deployment</span>
             <button
               className="btn-preset-link"
-              onClick={handleLoadSampleThreats}
-              title="Load SWBTA sample tactical radar sites"
+              onClick={() => setIsAddThreatModalOpen(true)}
+              title="Add threat site by coordinate (DD, DDM, DMS) or Military Grid (MGRS)"
             >
-              + SWBTA Presets
+              + Add by Coord / MGRS
             </button>
           </div>
 
           <div className="deployment-hint">
             <span className="hint-crosshair">+</span>
-            <span>Click map anywhere inside DEM to place a threat</span>
+            <span>Click map inside DEM to place threat</span>
           </div>
 
           {/* Default Parameters */}
@@ -713,12 +712,27 @@ function App() {
                     </div>
 
                     <div className="threat-row-meta">
+                      <span className="meta-tag mgrs-tag" title="MGRS Grid">
+                        {toMGRS(threat.lat, threat.lon)}
+                      </span>
                       <span className="meta-tag">{threat.lat.toFixed(4)}&deg;, {threat.lon.toFixed(4)}&deg;</span>
                       <span className="meta-tag">Obs: {threat.obsHeight}m</span>
                       <span className="meta-tag">R: {(threat.range / 1000).toFixed(1)}km</span>
                       {threat.groundElev !== null && threat.groundElev !== undefined && (
                         <span className="meta-tag elev-badge">Elev: {threat.groundElev.toFixed(0)}m</span>
                       )}
+                      <button
+                        type="button"
+                        className="btn-locate-threat"
+                        onClick={() => handleFocusThreat(threat)}
+                        title="Locate threat on map"
+                        aria-label="Locate threat on map"
+                      >
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                          <circle cx="12" cy="12" r="3" />
+                          <path d="M12 2v3m0 14v3M2 12h3m14 0h3" />
+                        </svg>
+                      </button>
                     </div>
                   </div>
                 ))}
@@ -895,10 +909,23 @@ function App() {
           onUpdateThreatName={handleUpdateThreatName}
           demBbox={demMetadata?.bbox}
           triggerFitBounds={triggerFitBounds}
+          focusTarget={focusTarget}
           visibleTiers={visibleTiers}
           showRangeRings={true}
         />
       </main>
+
+      {/* Add Threat by Coordinates / MGRS Modal */}
+      <AddThreatModal
+        isOpen={isAddThreatModalOpen}
+        onClose={() => setIsAddThreatModalOpen(false)}
+        onAddThreat={handleAddThreatFromModal}
+        demMetadata={demMetadata}
+        defaultObsHeight={defaultObsHeight}
+        defaultRange={defaultRange}
+        defaultThreatColor={defaultThreatColor}
+        threatsCount={threats.length}
+      />
     </div>
   );
 }
